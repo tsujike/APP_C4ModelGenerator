@@ -11,7 +11,7 @@
 - [x] T2-0a elkjsスパイク
 - [x] T2-0b Excalidrawカメラ制御スパイク
 - [x] T2-1 エッジ射影
-- [ ] T2-2 レイアウト+Excalidraw描画(L2固定)
+- [x] T2-2 レイアウト+Excalidraw描画(L2固定)
 - [ ] T2-3 カメラ(監視/Fit/正規化)
 - [ ] T3-1 レベル判定(lod)
 - [ ] T3-2 レベル切替+アンカー保存
@@ -142,3 +142,52 @@
   - テスト: `tests/model/project.test.ts`(単体16件)・`tests/model/project.snapshot.test.ts`
     (internet-bankingサンプルをL1〜L4全レベルで検証、7件)を追加。`npm test`
     (9 test files / 84 tests 緑)・`tsc --noEmit`・`npm run lint`・`npm run build` すべて成功を確認。
+- (2026-07-18) **T2-2完了。** `layout/layout.ts`(elkjs)・`render/theme.ts`・`render/shapes.ts`・
+  `render/toExcalidraw.ts`・`excal/host.tsx`を実装し、`main.ts`をサンプル→`buildModel`→
+  `project(model,2)`→`layout`→`toExcalidraw`→`mountExcalidraw`の配線に書き換えた。ブラウザで
+  internet-bankingサンプルのL2図(System_Boundary「ibs」の点線展開枠内にSPA/API/DB、外部の
+  System「バックオフィス管理システム」「信用情報機関」「メールシステム」、Person「銀行顧客」)が
+  C4配色・`[技術]`表記付きで表示されることをPlaywrightスクリーンショットで確認(完了条件どおり)。
+  T2-1の集約結果(`呼び出す (+2)`等)もラベルに反映されていることを確認。
+  - **T2-0aの知見(elkjs局所座標)を`layout.ts`の`walkNode`で実装**: elkjsは子ノードのx/y・
+    エッジの`sections`座標を親のローカル座標系で返すため、結果ツリーを再帰的に辿りながら
+    祖先オフセットを`offsetX/offsetY`として累積加算し絶対座標に変換する。エッジは
+    from/toの最も深い共通祖先(LCA)ノードの`edges`配列に割り当てる方式にした
+    (`groupEdgesByContainer`/`commonAncestor`)。
+  - **elkjsのインポート方法に関する重要な知見(以後elkjsを使う実装は必ず踏襲すること)**:
+    `import ELK from 'elkjs'`(メインエントリ)は内部でNode向けworkerフォールバックに
+    `require('web-worker')`を含み、Viteの本番ビルド(Rolldown)がこの分岐を静的解決しようと
+    して`npm run build`が失敗する(実測確認済み)。回避策として`elkjs/lib/elk-api.js`
+    (ELK本体)と`elkjs/lib/elk-worker.js`(GWTコンパイル済み同期フェイクワーカー)を直接
+    importし`workerFactory`で渡す構成にした。型定義が無いため`layout/elkjs-worker.d.ts`で
+    ambient宣言を追加している。
+  - **仕様上の曖昧点の解釈・実装上の判断(申し送り)**:
+    1. Excalidrawのtextスケルトンは`textAlign:'center'+verticalAlign:'middle'`のとき、
+       指定x/yを「左上」ではなく実測テキストサイズに基づく「中心点」として扱う(内部
+       `newTextElement`の挙動。設計書に明記が無く実機検証で判明)。`shapes.ts`の
+       `buildTextElement`は常にボックス中心座標を渡す実装にしている。
+    2. 文字幅見積り(`charWidthFactor`)は「厳密測定は不要」との指示どおり近似値
+       (全角文字基準で1.05)を`constants.ts`の`LAYOUT`に追加した。
+    3. Queue variantは§7.2の記述どおり両端ellipseを省略し角丸rectangleのみとした。
+    4. elkのspacing系オプションはルートに設定するだけでは入れ子(境界内)グラフに継承されない
+       ことを実機確認したため、`buildElkNode`で境界ノード自身にも明示的に再指定している。
+  - **既知の軽微な見た目の課題(次タスク以降で気になれば対応)**: L1(Context)近辺で複数の
+    エッジラベルが密集する場合、単純な文字数ベースの寸法見積りでは隣接ラベル同士がわずかに
+    重なることがある(サンプルの「利用する[HTTPS]」と「口座情報を照会[内部API]」がPerson直下で
+    近接するケースで実機確認)。機能上の不具合ではなく、厳密な文字幅測定を導入する場合の
+    改善余地として記録のみしておく。
+  - スコープ境界: レベル切替・カメラ制御/Fit・`lod.ts`は未実装(T2-3/T3-1/T3-2)。
+    クロスフェードは実装しない(既定方針どおり)。`excal/host.tsx`の`ExcalidrawHost`は
+    `updateElements`/`unmount`のみの最小限。
+  - JSX対応のためのインフラ変更(T2-2の成果物を成立させるために不可避): リポジトリルートに
+    `vite.config.ts`(`@vitejs/plugin-react`追加)を新規作成、`tsconfig.json`に
+    `"jsx": "react-jsx"`、`eslint.config.js`の型付きlint対象globに`src/**/*.tsx`を追加、
+    `index.html`のビューワーペインのプレースホルダ文言を実際の表示内容に合わせて微修正した。
+    これらはReact/JSXを`excal/host.tsx`に閉じ込める前提を成立させるための最小限の設定変更で
+    あり、`model/`・`parser/`・`spike-t2-0b/`には一切手を入れていない。
+  - テスト: `tests/layout/layout.test.ts`(elkjs結果からの座標変換をElkNodeの手計算値で検証+
+    実elkjs実行での包含不変条件確認)・`tests/render/theme.test.ts`・`tests/render/shapes.test.ts`
+    を追加。`npm test`(12 test files / 100 tests 緑)・`tsc --noEmit`・`npm run lint`・
+    `npm run build`すべて成功を確認。Playwright(Chromium)で`vite build`後の`vite preview`に
+    対しスクリーンショット確認済み(コンソールエラーはT2-0bと同様のExcalifontフォントCDN
+    到達不可のみで、機能上の問題なし)。

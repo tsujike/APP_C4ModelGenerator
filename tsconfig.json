@@ -6,6 +6,9 @@
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
+    /* src/excal/host.tsx のみがJSXを使う(CLAUDE.md: ReactはExcalidrawホストに閉じる)。
+       他ファイルは.tsのままなのでこの設定はhost.tsxにのみ実質的に影響する。 */
+    "jsx": "react-jsx",
 
     /* Bundler mode */
     "moduleResolution": "bundler",
