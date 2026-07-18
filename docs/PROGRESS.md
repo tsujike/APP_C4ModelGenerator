@@ -15,7 +15,7 @@
 - [x] T2-3 カメラ(監視/Fit/正規化)
 - [x] T3-1 レベル判定(lod)
 - [x] T3-2 レベル切替+アンカー保存
-- [ ] T4-1 CodeMirror+ライブ更新
+- [x] T4-1 CodeMirror+ライブ更新
 - [ ] T4-2 エラーパネル+永続化+サンプルメニュー
 - [ ] T5-1 エクスポート(exportToSvg/exportToBlob)
 - [ ] T5-2 性能確認+README+最終検証
@@ -302,3 +302,46 @@
   - スコープ境界: T4(CodeMirroエディタ・エラーパネル・サンプルメニュー)・T5(エクスポート)は
     未着手。エディタペイン・issues-panel・サンプル選択・SVG/PNG出力ボタンは引き続き
     プレースホルダのまま。クロスフェードは実装しない(既定方針どおり)。
+- (2026-07-18) **T4-1完了。** `ui/editor.ts`にCodeMirror 6エディタ(行番号・等幅・
+  StreamLanguageによる最小限のハイライト・300msデバウンス)を実装し、`index.html`の
+  `#editor-mount`にマウント。`main.ts`をエディタの変更(デバウンス済み)のたびに
+  `buildModel`→4レベル分の`project`/`layout`/`toExcalidraw`を再実行し、
+  `levelController.updateModel`経由で現在表示中のレベルの要素だけを`host.updateElements`で
+  差し替える配線に拡張した(カメラ/scroll/zoomには一切触れない。FR-1.3)。
+  - **依存追加**: `@codemirror/state`・`@codemirror/view`・`@codemirror/commands`・
+    `@codemirror/language`(StreamLanguage用)。バッテリー同梱の`codemirror`パッケージでは
+    なく最小構成を個別導入。バージョンは`^`付き(実装指示書§4のバージョン固定規約は
+    `@excalidraw/excalidraw`/`react`/`react-dom`のみに明記されており、elkjs追加時の解釈を
+    踏襲)。**申し送り**: 実機(Kennyさんのマシン)側で`package.json`が更新されたため、
+    T2-0a/T2-0b時と同様に実機での`npm install`再実行が必要(device_bashはネットワーク
+    アクセス不可のため、実装セッション側からはインストールできない)。
+  - **デバウンスの配置**: `main.ts`ではなく`ui/editor.ts`内に置いた。設計書§2のディレクトリ
+    構成表が`ui/editor.ts`の役割を「エディタ、デバウンス、localStorage」と明記しており、
+    「テキスト変更の生成源」と「変更通知の間引き」は同じ関心事と判断。`camera.ts`/
+    `levelController`が確立した「1関心事=1コントローラ」パターンを踏襲。
+  - **レイアウトキャッシュ破棄の実体**: 編集のたびに`buildLevelData`で4レベル分の
+    `LayoutResult`+Excalidraw要素を新規のMapとして作り直し、`levelController.updateModel`で
+    古い参照を丸ごと置き換える(部分更新・差分適用はしない、最単純な「全破棄・再構築」)。
+  - **`levelController`の拡張**: `updateModel(model, levelData)`を追加。内部の`model`/
+    `levelData`参照を差し替え、現在表示中レベルの要素のみ`host.updateElements`で反映する。
+    アンカー保存付きの`applySwitchElements`(レベル切替専用、scroll補正あり)とは意図的に
+    別経路にし、「ライブ編集」と「レベル切替」でカメラへの影響有無を明確に分離した。
+  - **独立検証(指揮者自身が追加実施)**: 実機Playwrightで、手動でズーム124%・パンした状態から
+    エディタでPersonのlabelテキストを編集し300ms超待った後、ズーム%表示が編集前後で
+    完全に同一(124%)であること、diagramの表示位置(スクロール枠)も見た目上変化していない
+    ことをスクリーンショット比較で確認した(FR-1.3を直接裏付け)。CodeMirrorの行番号ガター
+    (51行)・初期サンプル文言の表示も確認済み。
+  - 仕様上の判断・申し送り:
+    1. `buildModel`が返す`issues`(parse error/warning)は、T4-1時点ではUIパネル未実装
+       (issuesPanelはT4-2のスコープ)のため、握りつぶさずconsole.logのみに出力する
+       最小限の経路を残した。
+    2. 「表示中レベルのノードが編集で消えた」場合の挙動は特別扱いせず、4レベル全てを
+       毎回フルに作り直す設計により自然に安全(存在しないノードは単に要素配列に含まれない
+       だけで、クラッシュや不整合は生じない)。L4固定中に`Component(notification, ...)`行を
+       削除して実機確認済み(該当ボックスが消えるだけでクラッシュなし)。
+  - テスト: `tests/ui/editor.test.ts`(デバウンスのfake timerテスト+`classifyKeyword`の
+    分類テスト、計11件)、`tests/camera/levelController.test.ts`に`updateModel`関連2件を追加。
+    `npm test`(17 test files / 175 tests 緑)・`tsc --noEmit`・`npm run lint`・
+    `npm run build`すべて成功を確認(指揮者による独立再検証込み)。
+  - スコープ境界: localStorage永続化(FR-1.4)・サンプル読込メニュー(FR-1.5)・issuesPanel UI・
+    スプリッターは未着手(T4-2)。補完・lint gutterは実装しない(指示書「やらないこと」)。

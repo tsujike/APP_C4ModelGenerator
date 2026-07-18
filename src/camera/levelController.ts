@@ -44,6 +44,24 @@ export interface LevelController {
   lockTo(level: Level): void;
   /** AUTOモードに戻す(FR-5.5)。現在のズーム値に基づき、必要ならその場で再判定・切替する。 */
   setAuto(): void;
+  /**
+   * T4-1: テキスト編集による再解析後、新しいモデル+4レベル分のlevelDataに丸ごと差し替える。
+   *
+   * 設計判断(申し送り): レベル切替(§8.3のアンカー保存)とライブ編集再描画(FR-1.3)は
+   * 「要素を差し替える」という操作面では似ているが、目的が異なる別の関心事として扱う。
+   * レベル切替は「表示レベルが変わる」操作でありアンカー保存によるカメラ補正が必須
+   * (`applySwitchElements`)。一方ライブ編集はレベルを変えず、FR-1.3が要求するのは
+   * 「カメラに一切触れない」ことそのものなので、アンカー計算(`getAnchorWorldPoint`→
+   * `computeAnchorPreservingScroll`)を一切経由せず`host.updateElements`のみを呼ぶ
+   * (host.updateElementsはappStateを一切渡さないため、Excalidraw側のscrollX/scrollY/zoomは
+   * 触れられずそのまま保たれる)。
+   *
+   * `model`/`levelData`はこのコントローラが以後保持する唯一の情報源になる(古い方は破棄する=
+   * レイアウトキャッシュの破棄そのもの)。現在表示中のレベルのlevelDataが(あり得ないはずだが)
+   * 見つからない場合は何もしない(ALL_LEVELSの4レベル全てを毎回計算する前提が破られた場合の
+   * 防御。呼び出し側=main.tsの契約違反であり通常到達しない)。
+   */
+  updateModel(model: C4Model, levelData: ReadonlyMap<Level, LevelData>): void;
 }
 
 /**
@@ -54,10 +72,16 @@ export interface LevelController {
 export function createLevelController(
   host: ExcalidrawHost,
   camera: CameraController,
-  model: C4Model,
-  levelData: ReadonlyMap<Level, LevelData>,
+  initialModel: C4Model,
+  initialLevelData: ReadonlyMap<Level, LevelData>,
   initialLevel: Level,
 ): LevelController {
+  // T4-1: 編集のたびに丸ごと差し替わる可変の参照(updateModel参照)。以前はcreateLevelController
+  // の固定引数だったが、テキスト編集の度に「新しいモデル+新しい4レベル分levelData」で
+  // 完全に置き換える必要があるため`let`にした(古いlevelDataを部分的に混在させない=
+  // レイアウトキャッシュの取り違え防止)。
+  let model: C4Model = initialModel;
+  let levelData: ReadonlyMap<Level, LevelData> = initialLevelData;
   let state: LevelControllerState = { level: initialLevel, levelLock: null };
   const listeners = new Set<LevelControllerListener>();
 
@@ -132,6 +156,18 @@ export function createLevelController(
       const target = camState.scale === null ? state.level : nextLevel(state.level, camState.scale);
       if (target !== state.level) applySwitchElements(target);
       setState({ level: target, levelLock: null });
+    },
+    updateModel(newModel, newLevelData) {
+      model = newModel;
+      levelData = newLevelData;
+      const currentData = levelData.get(state.level);
+      // newLevelDataは呼び出し側(main.ts)がALL_LEVELS全てを毎回計算する契約のため、
+      // 通常到達しない(呼び出し側契約違反時のみの防御)。
+      if (currentData === undefined) return;
+      // FR-1.3: カメラ(scroll/zoom)には一切触れない。applySwitchElements(アンカー保存付き
+      // レベル切替)とは別経路のhost.updateElementsのみを呼ぶ(このファイル冒頭のupdateModelの
+      // JSDoc参照)。
+      host.updateElements(currentData.elements);
     },
   };
 }

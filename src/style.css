@@ -41,8 +41,21 @@ body {
 #editor-pane {
   grid-area: editor;
   border-right: 1px solid #ccc;
-  overflow: auto;
-  padding: 8px;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+  min-height: 0;
+}
+
+/* T4-1: CodeMirrorはeditor-paneいっぱいに広がり、内部で行番号ガター含めてスクロールする
+   (editor-pane自身はoverflow:hiddenにし、二重スクロールバーが出ないようにする)。 */
+#editor-mount {
+  position: absolute;
+  inset: 0;
+}
+
+#editor-mount .cm-editor {
+  height: 100%;
 }
 
 #issues-panel {

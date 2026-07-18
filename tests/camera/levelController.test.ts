@@ -39,20 +39,24 @@ function createMockCamera(initial: CameraState): {
   };
 }
 
-/** `ExcalidrawHost` のモック。applyLevelSwitchの呼び出し内容を記録する。 */
+/** `ExcalidrawHost` のモック。applyLevelSwitch/updateElementsの呼び出し内容を記録する。 */
 function createMockHost(anchorPoint: WorldPoint | null): {
   host: ExcalidrawHost;
   applyCalls: Array<{
     elements: readonly ExcalidrawElementSkeleton[];
     scroll?: { scrollX: number; scrollY: number };
   }>;
+  updateElementsCalls: Array<readonly ExcalidrawElementSkeleton[]>;
 } {
   const applyCalls: Array<{
     elements: readonly ExcalidrawElementSkeleton[];
     scroll?: { scrollX: number; scrollY: number };
   }> = [];
+  const updateElementsCalls: Array<readonly ExcalidrawElementSkeleton[]> = [];
   const host: ExcalidrawHost = {
-    updateElements: vi.fn(),
+    updateElements(elements) {
+      updateElementsCalls.push(elements);
+    },
     unmount: vi.fn(),
     subscribeCamera: () => () => {
       // 未使用。
@@ -65,7 +69,7 @@ function createMockHost(anchorPoint: WorldPoint | null): {
       applyCalls.push({ elements, ...(scroll !== undefined ? { scroll } : {}) });
     },
   };
-  return { host, applyCalls };
+  return { host, applyCalls, updateElementsCalls };
 }
 
 function layoutNode(id: string, x: number, y: number, w: number, h: number): LayoutNode {
@@ -268,5 +272,49 @@ describe('createLevelController: subscribe', () => {
     unsubscribe();
     controller.lockTo(1);
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
+  it('現在レベルの新しい要素をhost.updateElementsで反映し、applyLevelSwitch/カメラには触れない', () => {
+    const { levelData, model } = createLevelData();
+    const { host, applyCalls, updateElementsCalls } = createMockHost({ x: 50, y: 50 });
+    const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
+
+    const controller = createLevelController(host, camera, model, levelData, 2);
+
+    const newLevelData = new Map<Level, LevelData>(levelData);
+    const newL2Elements: ExcalidrawElementSkeleton[] = [
+      { id: 'edited', type: 'rectangle', x: 0, y: 0, width: 1, height: 1 },
+    ];
+    newLevelData.set(2, { layout: levelData.get(2)!.layout, elements: newL2Elements });
+
+    controller.updateModel(model, newLevelData);
+
+    expect(updateElementsCalls).toHaveLength(1);
+    expect(updateElementsCalls[0]).toEqual(newL2Elements);
+    // レベル/固定状態やapplyLevelSwitch(アンカー保存経路)は一切呼ばれない(FR-1.3: カメラ維持)。
+    expect(applyCalls).toHaveLength(0);
+    expect(controller.getState()).toEqual({ level: 2, levelLock: null });
+  });
+
+  it('古いlevelDataを再利用せず、以後のレベル切替でも新しいlevelDataだけが使われる(レイアウトキャッシュ破棄)', () => {
+    const { levelData, model } = createLevelData();
+    const { host, applyCalls } = createMockHost({ x: 50, y: 50 });
+    const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
+
+    const controller = createLevelController(host, camera, model, levelData, 2);
+
+    const newLevelData = new Map<Level, LevelData>(levelData);
+    const newL3Elements: ExcalidrawElementSkeleton[] = [
+      { id: 'edited-l3', type: 'rectangle', x: 0, y: 0, width: 1, height: 1 },
+    ];
+    newLevelData.set(3, { layout: levelData.get(3)!.layout, elements: newL3Elements });
+    controller.updateModel(model, newLevelData);
+
+    controller.lockTo(3);
+
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]?.elements).toEqual(newL3Elements);
   });
 });

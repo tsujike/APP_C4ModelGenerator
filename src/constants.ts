@@ -19,6 +19,12 @@ export const LOD_ZOOM_THRESHOLDS = [0.75, 1.5, 3.0] as const;
  */
 export const LOD_HYSTERESIS_FACTOR = 0.9;
 
+/**
+ * エディタのライブ更新デバウンス(FR-1.2: 入力後300msで自動的に再解析・再描画する)。
+ * 出典: docs/01_要件定義書.md FR-1.2, docs/04_実装指示書.md T4-1完了条件。
+ */
+export const EDITOR_DEBOUNCE_MS = 300;
+
 /** C4要素の種別ごとの塗り色(通常/External)。 */
 export const C4_COLORS = {
   person: { fill: '#08427B', extFill: '#686868' },

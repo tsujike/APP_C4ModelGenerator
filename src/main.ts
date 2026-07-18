@@ -10,20 +10,28 @@ import { layout } from './layout/layout';
 import { buildModel } from './model/build';
 import { project } from './model/project';
 import type { C4Model, Level } from './model/types';
+import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
 import { internetBankingSample } from './samples/internet-banking';
+import { createEditor, type EditorController } from './ui/editor';
 
 const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4];
 /** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
 const INITIAL_LEVEL: Level = 2;
 
 // サンプル→統一モデル→(全レベル分の)射影→レイアウト→Excalidraw要素、の配線。
-// マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+アンカー保存(T3-2)を配線する。
+// マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+アンカー保存(T3-2)、
+// エディタ+ライブ再解析(T4-1)を配線する。
 async function bootstrap(): Promise<void> {
   const excalidrawContainer = document.getElementById('excalidraw-container');
   if (excalidrawContainer === null) throw new Error('#excalidraw-container が見つかりません。');
+  const editorContainer = document.getElementById('editor-mount');
+  if (editorContainer === null) throw new Error('#editor-mount が見つかりません。');
 
-  const { model } = buildModel(internetBankingSample);
+  const editor = createEditor(editorContainer, internetBankingSample);
+
+  const { model, issues } = buildModel(editor.getValue());
+  reportIssues(issues);
   const levelData = await buildLevelData(model);
 
   const initialData = levelData.get(INITIAL_LEVEL);
@@ -35,6 +43,39 @@ async function bootstrap(): Promise<void> {
   const camera = setupCamera(host);
   const levelController = createLevelController(host, camera, model, levelData, INITIAL_LEVEL);
   setupLevelControls(levelController);
+  setupLiveEditing(editor, levelController);
+}
+
+/**
+ * T4-1: エディタの変更(300msデバウンス済み、FR-1.2)のたびに再解析→4レベル分の
+ * 射影/レイアウト/Excalidraw要素変換をやり直し、levelControllerへ丸ごと差し替える。
+ * これが「レイアウトキャッシュ破棄」の実体(古いlevelDataを一切再利用せず、毎回
+ * buildLevelDataで新規に作り直したMapに完全入れ替えする)。
+ *
+ * カメラ(scroll/zoom)には一切触れない(levelController.updateModelがhost.updateElementsのみを
+ * 呼ぶため。FR-1.3)。
+ */
+function setupLiveEditing(editor: EditorController, levelController: LevelController): void {
+  editor.subscribe((source) => {
+    void reparseAndRerender(source, levelController);
+  });
+}
+
+async function reparseAndRerender(source: string, levelController: LevelController): Promise<void> {
+  const { model, issues } = buildModel(source);
+  reportIssues(issues);
+  const levelData = await buildLevelData(model);
+  levelController.updateModel(model, levelData);
+}
+
+/**
+ * 解析/整合性エラー・警告の報告先(T4-1時点ではUIパネル未実装。issuesPanelはT4-2のスコープ)。
+ * FR-2.2のパネル表示は行わないが、issuesそのものを握りつぶさずコンソールに出す(申し送り:
+ * 完全な無視ではなく開発者が確認できる最小限の経路を残した)。
+ */
+function reportIssues(issues: readonly ParseIssue[]): void {
+  if (issues.length === 0) return;
+  console.log(`[C4] 解析issues: ${String(issues.length)}件`, issues);
 }
 
 /**
