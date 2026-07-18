@@ -31,6 +31,9 @@ function createMockHost(): {
     // T3-2で追加されたメソッド(camera.tsは使わないため、このテストでは未使用)。
     getAnchorWorldPoint: () => null,
     applyLevelSwitch: vi.fn(),
+    // T5-1で追加されたメソッド(camera.tsは使わないため、このテストでは未使用)。
+    exportSvgString: vi.fn(),
+    exportPngBlob: vi.fn(),
   };
 
   return {

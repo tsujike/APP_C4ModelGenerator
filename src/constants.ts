@@ -45,6 +45,20 @@ export const SPLITTER = {
   defaultColumnWidth: 320,
 } as const;
 
+/**
+ * SVG/PNGエクスポート(要件定義書FR-6.1/FR-6.2、実装指示書T5-1)の既定値。
+ * `backgroundColor`はExcalidrawの既定背景色(白)を明示する値。本アプリは
+ * `excal/host.tsx`のinitialDataで`viewBackgroundColor`を一度もカスタマイズしていないため、
+ * この値がそのまま画面表示と一致する(受入基準5「内容が画面表示と一致する」の根拠)。
+ * `pngScale`は指示書T5-1「exportToBlob(scale: 2)」の解像度倍率(`excal/host.tsx`の
+ * `exportPngBlob`が`getDimensions`コールバックで適用する。実機確認: 公開APIの`exportToBlob`は
+ * `appState.exportScale`単独では解像度に反映されないため)。
+ */
+export const EXPORT = {
+  backgroundColor: '#ffffff',
+  pngScale: 2,
+} as const;
+
 /** C4要素の種別ごとの塗り色(通常/External)。 */
 export const C4_COLORS = {
   person: { fill: '#08427B', extFill: '#686868' },

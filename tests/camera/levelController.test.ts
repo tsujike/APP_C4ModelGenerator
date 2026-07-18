@@ -68,6 +68,9 @@ function createMockHost(anchorPoint: WorldPoint | null): {
     applyLevelSwitch(elements, scroll) {
       applyCalls.push({ elements, ...(scroll !== undefined ? { scroll } : {}) });
     },
+    // T5-1で追加されたメソッド(levelControllerは使わないため、このテストでは未使用)。
+    exportSvgString: vi.fn(),
+    exportPngBlob: vi.fn(),
   };
   return { host, applyCalls, updateElementsCalls };
 }

@@ -10,11 +10,46 @@
  * 実装パターンはT2-0bスパイク(spike-t2-0b/main.tsx、動作確認済み)を踏襲する。
  */
 
-import { Excalidraw, convertToExcalidrawElements } from '@excalidraw/excalidraw';
+import {
+  Excalidraw,
+  convertToExcalidrawElements,
+  exportToBlob,
+  exportToSvg,
+} from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { createRoot, type Root } from 'react-dom/client';
+import { EXPORT } from '../constants';
+
+/**
+ * `exportToSvg`/`exportToBlob`の型付け不備への対応(申し送り): これら2つの値は
+ * `node_modules/@excalidraw/excalidraw/dist/types/excalidraw/index.d.ts` で
+ * `export { exportToBlob, exportToSvg, ... } from "@excalidraw/utils/export";` として
+ * 再エクスポートされているが、`@excalidraw/utils` は本プロジェクトに存在しない別パッケージ
+ * (`node_modules/@excalidraw/`配下を確認したが `utils` は無い)であり、型解決に失敗して
+ * 事実上 `any` になる(`tsc --noEmit`は`skipLibCheck: true`により無言で通すが、
+ * `npm run lint`の`@typescript-eslint/no-unsafe-*`が検出する)。実装指示書§4
+ * 「`any`禁止(外部ライブラリ境界での`unknown`→絞り込みは可)」の方針に沿い、実際の
+ * シグネチャ(`node_modules/@excalidraw/excalidraw/dist/types/utils/export.d.ts`の
+ * `ExportOpts`/`exportToSvg`/`exportToBlob`宣言で確認済み。パッケージ自体のバグであり
+ * バージョン固定(実装指示書§4)のためexcalidraw側の更新では直さない)を手動で型付けし直す。
+ */
+interface ExportOpts {
+  elements: ReturnType<typeof convertToExcalidrawElements>;
+  appState: { exportBackground: boolean; viewBackgroundColor: string };
+  files: null;
+}
+const typedExportToSvg = exportToSvg as (opts: ExportOpts) => Promise<SVGSVGElement>;
+const typedExportToBlob = exportToBlob as (
+  opts: ExportOpts & {
+    mimeType: string;
+    getDimensions: (
+      width: number,
+      height: number,
+    ) => { width: number; height: number; scale: number };
+  },
+) => Promise<Blob>;
 
 /** Excalidrawのカメラ状態のうち、camera.tsが監視する3値のみを抜き出したスナップショット。 */
 export interface ExcalidrawCameraSnapshot {
@@ -96,6 +131,19 @@ export interface ExcalidrawHost {
     elements: readonly ExcalidrawElementSkeleton[],
     scroll?: { scrollX: number; scrollY: number },
   ): void;
+  /**
+   * T5-1(FR-6.1、受入基準5): `elements`(呼び出し側が渡す、対象レベルの全要素)をSVG文字列として
+   * 書き出す。`exportToSvg`/`convertToExcalidrawElements`は`@excalidraw/excalidraw`が提供する
+   * 素の関数(要素・appState・filesを受け取りSVGSVGElementを返すだけ)でReactコンテキストを
+   * 必要としないが、この二つの値インポートを`excal/host.tsx`にのみ閉じることで、`ui/exporter.ts`
+   * (テストで`node`環境からimportされる)が`@excalidraw/excalidraw`本体(ブラウザの`window`前提の
+   * 初期化コードを含む)を読み込まずに済むようにする(申し送り: PROGRESS.md参照)。
+   * `exportToSvg`が返す`SVGSVGElement`はDOMに未接続のため、`XMLSerializer`で文字列化してから返す
+   * (実際のダウンロードトリガーは`ui/exporter.ts`の責務)。
+   */
+  exportSvgString(elements: readonly ExcalidrawElementSkeleton[]): Promise<string>;
+  /** T5-1(FR-6.2): `elements`をPNG(`EXPORT.pngScale`倍解像度)のBlobとして書き出す。 */
+  exportPngBlob(elements: readonly ExcalidrawElementSkeleton[]): Promise<Blob>;
 }
 
 interface ApiBox {
@@ -263,6 +311,35 @@ export function mountExcalidraw(
           appState: { scrollX: scroll.scrollX, scrollY: scroll.scrollY },
         });
       }
+    },
+    async exportSvgString(elements) {
+      const converted = convertToExcalidrawElements([...elements]);
+      const svg = await typedExportToSvg({
+        elements: converted,
+        appState: { exportBackground: true, viewBackgroundColor: EXPORT.backgroundColor },
+        files: null,
+      });
+      return new XMLSerializer().serializeToString(svg);
+    },
+    async exportPngBlob(elements) {
+      const converted = convertToExcalidrawElements([...elements]);
+      // 実機確認による申し送り: 公開APIの`exportToBlob`(内部実装 `../utils/export.ts` の
+      // `exportToCanvas2`)は`appState.exportScale`を単独では無視する
+      // (`maxWidthOrHeight`未指定時は`getDimensions`のみが解像度を決める。
+      // `appState.exportScale`が効くのは`maxWidthOrHeight`指定時のフォールバック分岐のみで、
+      // このアプリの用途には不要に複雑)。`getDimensions`で明示的に`EXPORT.pngScale`倍した
+      // 幅・高さとscaleを返すことで確実に2x解像度にする。
+      return typedExportToBlob({
+        elements: converted,
+        appState: { exportBackground: true, viewBackgroundColor: EXPORT.backgroundColor },
+        files: null,
+        mimeType: 'image/png',
+        getDimensions: (width, height) => ({
+          width: width * EXPORT.pngScale,
+          height: height * EXPORT.pngScale,
+          scale: EXPORT.pngScale,
+        }),
+      });
     },
   };
 }

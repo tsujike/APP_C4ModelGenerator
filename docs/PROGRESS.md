@@ -17,7 +17,7 @@
 - [x] T3-2 レベル切替+アンカー保存
 - [x] T4-1 CodeMirror+ライブ更新
 - [x] T4-2 エラーパネル+永続化+サンプルメニュー
-- [ ] T5-1 エクスポート(exportToSvg/exportToBlob)
+- [x] T5-1 エクスポート(exportToSvg/exportToBlob)
 - [ ] T5-2 性能確認+README+最終検証
 
 ## 申し送り
@@ -405,3 +405,39 @@
     localStorageのみで実装)。
   - スコープ境界: T5(SVG/PNGエクスポート)は未着手、エクスポートボタンは引き続き
     プレースホルダのまま。`parser/`・`model/`・`layout/`・`render/`には一切手を入れていない。
+- (2026-07-18) **T5-1完了。** `ui/exporter.ts`(FR-6.1/FR-6.2、ダウンロードトリガーの
+  純粋関数群)を新規実装し、`excal/host.tsx`の`ExcalidrawHost`に`exportSvgString`/
+  `exportPngBlob`を追加。`index.html`のプレースホルダを実`<button id="export-svg-button">`/
+  `<button id="export-png-button">`に置換、`main.ts`で現在表示中レベル(`levelController`の
+  `getState().level`)の全要素(`levelData`)をエクスポート対象として配線した。
+  - **`exportToSvg`/`exportToBlob`の呼び出し場所の判断**: 型定義上はReactコンテキスト不要
+    (素の関数)だが、実際の呼び出しは`excal/host.tsx`に置いた。理由はReactではなく
+    `@excalidraw/excalidraw`パッケージ自体がモジュール評価時にブラウザの`window`を参照する
+    初期化コードを含むため(vitestで`ui/exporter.ts`が同パッケージを値importすると
+    `window is not defined`で落ちることを実機確認)。既存パターン(host.tsxのみが
+    `@excalidraw/excalidraw`を値importする)を維持し、`ui/exporter.ts`はダウンロード
+    トリガー(DOM操作)に専念させた。
+  - **画面表示との一致**: `appState: { exportBackground: true, viewBackgroundColor: '#ffffff'
+    (constants.tsのEXPORT.backgroundColor) }`。PNGの2倍解像度化で`appState.exportScale`が
+    単独では効かない(`maxWidthOrHeight`未指定時は無視される)ことを実機確認し、
+    `exportToBlob`の`getDimensions`コールバックで幅・高さ・scaleを明示的に2倍にして解決した
+    (パッケージの実装上の癖への対処。申し送り)。
+  - **独立検証(指揮者自身が追加実施)**: 実機Playwrightで、L2表示中にSVG/PNGボタンを押下し
+    ダウンロードされたファイル(`c4-model-L2.svg`/`.png`)を検証 — SVGは`<svg`で始まり
+    「SPA」「API」「銀行顧客」等の画面表示どおりのテキストを含む、PNGはファイル署名
+    (`89 50 4E 47 0D 0A 1A 0A`)が有効。L3へ切り替えて再エクスポートすると
+    `c4-model-L3.svg`となり、L3固有のラベル(「サインインCtrl」)を含み「対象は現レベルの
+    全要素」であることを確認。エクスポートしたSVGを`file://`で単独に開いてスクリーンショットし、
+    C4配色・境界枠・集約エッジラベルまで画面表示と完全に一致することを目視確認した。
+  - 仕様上の判断・申し送り:
+    1. `@excalidraw/excalidraw`パッケージの型定義が実際には存在しない`@excalidraw/utils`を
+       参照しており、`exportToSvg`/`exportToBlob`の型が実質`any`になる問題があったため、
+       `host.tsx`内で手動の型注釈(関数シグネチャの明示)を1箇所に閉じて対処した。
+    2. ダウンロードファイル名は仕様に明記が無いため`c4-model-L{level}.{ext}`とした
+       (最単純解釈。どのレベルの書き出しか一目でわかる)。
+  - テスト: `tests/ui/exporter.test.ts`(`exportFileName`のユニットテスト)を追加、
+    モックhostに新メソッドを追加して`tests/camera/{camera,levelController}.test.ts`を更新。
+    `npm test`(20 test files / 190 tests 緑)・`tsc --noEmit`・`npm run lint`・
+    `npm run build`すべて成功を確認(指揮者による独立再検証込み)。新規npm依存は無し。
+  - スコープ境界: T5-2(性能確認・README・最終検証)は未着手。`parser/`・`model/`・`layout/`・
+    `render/`には一切手を入れていない。

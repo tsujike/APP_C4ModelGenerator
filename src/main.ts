@@ -19,6 +19,7 @@ import {
   savePersistedSource,
   type EditorController,
 } from './ui/editor';
+import { exportCurrentLevelPng, exportCurrentLevelSvg } from './ui/exporter';
 import { createIssuesPanel, type IssuesPanelController } from './ui/issuesPanel';
 import { createSplitter } from './ui/splitter';
 
@@ -54,7 +55,12 @@ async function bootstrap(): Promise<void> {
 
   const { model, issues } = buildModel(editor.getValue());
   issuesPanel.update(issues);
-  const levelData = await buildLevelData(model);
+  // T5-1: エクスポートボタンは「クリック時点で表示中のレベルの全要素」を必要とするため、
+  // 編集のたびに再構築される最新のlevelDataを常に読めるよう`let`にする(このファイル冒頭の
+  // 申し送りどおり、以前は`const`でbootstrap内に閉じていたが、それだと再解析後の最新版を
+  // 参照する手段が無かった)。再解析時の差し替えは`setupLiveEditing`に渡す
+  // `onLevelDataUpdated`コールバックで行う。
+  let levelData = await buildLevelData(model);
 
   const initialData = levelData.get(INITIAL_LEVEL);
   // ALL_LEVELSの全レベルをbuildLevelDataで計算済みのため到達しない分岐。
@@ -65,10 +71,13 @@ async function bootstrap(): Promise<void> {
   const camera = setupCamera(host);
   const levelController = createLevelController(host, camera, model, levelData, INITIAL_LEVEL);
   setupLevelControls(levelController);
-  setupLiveEditing(editor, levelController, issuesPanel);
+  setupLiveEditing(editor, levelController, issuesPanel, (newLevelData) => {
+    levelData = newLevelData;
+  });
   setupPersistence(editor);
   setupSampleMenu(editor);
   setupSplitter();
+  setupExporter(host, levelController, () => levelData);
 }
 
 /**
@@ -85,9 +94,10 @@ function setupLiveEditing(
   editor: EditorController,
   levelController: LevelController,
   issuesPanel: IssuesPanelController,
+  onLevelDataUpdated: (levelData: Map<Level, LevelData>) => void,
 ): void {
   editor.subscribe((source) => {
-    void reparseAndRerender(source, levelController, issuesPanel);
+    void reparseAndRerender(source, levelController, issuesPanel, onLevelDataUpdated);
   });
 }
 
@@ -95,11 +105,15 @@ async function reparseAndRerender(
   source: string,
   levelController: LevelController,
   issuesPanel: IssuesPanelController,
+  onLevelDataUpdated: (levelData: Map<Level, LevelData>) => void,
 ): Promise<void> {
   const { model, issues } = buildModel(source);
   issuesPanel.update(issues);
   const levelData = await buildLevelData(model);
   levelController.updateModel(model, levelData);
+  // T5-1: エクスポートボタンが常に最新のlevelDataを読めるよう、bootstrap側の`let levelData`を
+  // 差し替える(このコールバックの実体はbootstrap内のクロージャ)。
+  onLevelDataUpdated(levelData);
 }
 
 /**
@@ -151,6 +165,38 @@ function setupSplitter(): void {
   const appEl = document.getElementById('app');
   if (handle === null || appEl === null) return;
   createSplitter(handle, appEl);
+}
+
+/**
+ * T5-1: ツールバーのSVG/PNG出力ボタン(FR-6.1/FR-6.2)を配線する。
+ * 実装指示書T5-1「対象は現レベルの全要素」: クリック時点で`levelController.getState().level`が
+ * 指す表示中レベルの`LevelData.elements`を`getLevelData()`から取得して渡す。
+ * `getLevelData`はbootstrap内の`let levelData`を読む関数(クロージャ)で、テキスト編集による
+ * 再解析のたびに`setupLiveEditing`の`onLevelDataUpdated`経由で差し替わった最新版を指す
+ * (このファイル冒頭の申し送り: 以前は`const`のためbootstrap内の初期値しか参照できなかった)。
+ */
+function setupExporter(
+  host: ExcalidrawHost,
+  levelController: LevelController,
+  getLevelData: () => ReadonlyMap<Level, LevelData>,
+): void {
+  const svgButton = document.getElementById('export-svg-button');
+  const pngButton = document.getElementById('export-png-button');
+
+  svgButton?.addEventListener('click', () => {
+    const { level } = levelController.getState();
+    const data = getLevelData().get(level);
+    // levelDataは1〜4全て事前計算済み(buildLevelDataの契約)のため到達しない分岐。
+    if (data === undefined) return;
+    void exportCurrentLevelSvg(host, data.elements, level);
+  });
+
+  pngButton?.addEventListener('click', () => {
+    const { level } = levelController.getState();
+    const data = getLevelData().get(level);
+    if (data === undefined) return;
+    void exportCurrentLevelPng(host, data.elements, level);
+  });
 }
 
 /**
