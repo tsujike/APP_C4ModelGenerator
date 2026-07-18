@@ -34,6 +34,10 @@ body {
   padding: 8px 12px;
 }
 
+#toolbar > * {
+  margin-right: 8px;
+}
+
 #editor-pane {
   grid-area: editor;
   border-right: 1px solid #ccc;

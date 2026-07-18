@@ -12,7 +12,7 @@
 - [x] T2-0b Excalidrawカメラ制御スパイク
 - [x] T2-1 エッジ射影
 - [x] T2-2 レイアウト+Excalidraw描画(L2固定)
-- [ ] T2-3 カメラ(監視/Fit/正規化)
+- [x] T2-3 カメラ(監視/Fit/正規化)
 - [ ] T3-1 レベル判定(lod)
 - [ ] T3-2 レベル切替+アンカー保存
 - [ ] T4-1 CodeMirror+ライブ更新
@@ -191,3 +191,46 @@
     `npm run build`すべて成功を確認。Playwright(Chromium)で`vite build`後の`vite preview`に
     対しスクリーンショット確認済み(コンソールエラーはT2-0bと同様のExcalifontフォントCDN
     到達不可のみで、機能上の問題なし)。
+  - **重要な申し送り**: 実機(Kennyさんのマシン)の`node_modules`はT0-1時点の`npm install`から
+    更新されておらず、T2-0a/T2-0bで`package.json`に追加されたelkjs/@excalidraw/excalidraw/
+    react/react-domが未インストールだった。デバイスブリッジのシェル(device_bash)はネット
+    ワークアクセスが無い設計のため、実装セッション側からは`npm install`を実行できない。
+    このコミット取り込み後、実機で`npm install`の再実行をKennyさんに依頼した。
+    (以後、`package.json`の依存関係を変更するタスクの後は同様の申し送りが必要)。
+- (2026-07-18) **T2-3完了。** `camera/camera.ts`(カメラ監視/Fit/正規化。設計書§8.1)を実装。
+  `excal/host.tsx`の`ExcalidrawHost`に`subscribeCamera`(onChangeのzoom/scroll購読)と
+  `fitToContent`(`scrollToContent(..., {fitToViewport:true})`のラップ、任意の一回限りコール
+  バックで「このFit呼び出し自身の結果」を取得可能)を追加。`camera.ts`はReact/JSXを一切
+  importせず、host.tsxが提供する非React最小インターフェース越しにのみ操作する
+  (実装指示書§4「camera.ts経由に一本化」)。z0(正規化基準)は起動直後の1回限りの
+  `fitAndEstablishZ0()`で確定し、以後再計算しない。ツールバーの`[Fit]`ボタン(実DOM化)と
+  ズーム%表示(`#zoom-readout`)を`main.ts`から`camera.ts`経由で配線した。
+  - **実機検証で発見・修正したバグ**: `excalidrawAPI`コールバックが発火した直後はまだ
+    Excalidrawの内部シーンが空(`getSceneElements().length===0`)かつ`appState.width/height`が
+    CSS Grid確定前の仮寸法のため、その時点で`fitToContent`を呼ぶと「収める対象が無い」状態で
+    ズームが変化せずz0がzoom=1.0(=100%)のまま誤確定してしまう不具合があった。修正として、
+    `fitToContent`の実行を「APIの初期化」だけでなく「最初の`onChange`発火(=シーン・寸法とも
+    確定した合図)」まで遅延させるようにした(`host.tsx`の`runWhenSceneReady`)。修正後は
+    起動直後のズーム%が90%(=Excalidraw純正のズームバッジと一致)で安定し、3回のリロードで
+    いずれも90%を再現することを確認した(z0の安定性という完了条件を直接裏付ける)。
+  - 完了条件の確認(独立検証済み): Playwright実機操作で、Ctrl+wheelズーム操作後にツールバーの
+    `ズーム率`表示が90%→100%へ追従して更新されること、Fitボタン押下で90%(全体表示)に戻る
+    こと、ページを3回リロードしてもいずれも起動直後90%で安定することを確認した。
+  - 仕様上の判断・申し送り:
+    1. FR-4.4のツールバー`ズーム率%`表示は、正規化後のs(`state.scale`、しきい値判定用の
+       内部値。T3-1のlod.ts専用)ではなく、Excalidraw自身のズームバッジと同じ意味の**生の**
+       `zoom.value×100`を採用した(実機でExcalidraw純正のズームバッジと完全一致することを
+       確認)。sは`CameraState.scale`として内部的に計算済みで、T3-1のlod.ts実装時にそのまま
+       利用できる。
+    2. 設計書§9の完全な`AppState`/`state.ts`(model/issues/layouts/level/levelLock等)はまだ
+       作成していない。level/levelLockはT3-1/T3-2のスコープであり、今の時点で導入すると
+       先回りの抽象化になるため、`camera.ts`は自己完結した最小限の`CameraState`のみを持つ。
+       `state.ts`の導入はT3-1/T3-2で実際に必要になった時点で行う。
+  - スコープ境界: `lod.ts`(`nextLevel`)・レベル切替・アンカー保存(§8.3)・AUTO/手動レベル
+    ロックUIは未実装(T3-1/T3-2)。クロスフェードは実装しない。サンプル選択・レベルボタン
+    (L1〜L4/AUTO)・SVG/PNG出力ボタンは引き続きプレースホルダのまま(他タスクの担当範囲)。
+  - テスト: `tests/camera/camera.test.ts`(モックした`ExcalidrawHost`に対する単体テスト7件:
+    初期状態・z0確定前のonChangeミラーリング・`fitAndEstablishZ0`によるz0確定・
+    s=zoom/z0の算出・z0確定後の再Fitでの非変化(冪等性)・Fitボタンがz0に影響しないこと・
+    subscribe/unsubscribe)を追加。`npm test`(13 test files / 107 tests 緑)・`tsc --noEmit`・
+    `npm run lint`・`npm run build`すべて成功を確認。
