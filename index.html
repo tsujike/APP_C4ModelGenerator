@@ -9,7 +9,17 @@
   <body>
     <div id="app">
       <header id="toolbar">
-        <span>ツールバー: [サンプル&#9662;] [レベル: L1 L2 L3 L4 | AUTO]</span>
+        <span>ツールバー: [サンプル&#9662;]</span>
+        <span id="level-controls">
+          レベル:
+          <button id="level-button-1" type="button" data-level="1">L1</button>
+          <button id="level-button-2" type="button" data-level="2">L2</button>
+          <button id="level-button-3" type="button" data-level="3">L3</button>
+          <button id="level-button-4" type="button" data-level="4">L4</button>
+          |
+          <button id="level-auto-button" type="button">AUTO</button>
+        </span>
+        <span id="level-status"></span>
         <button id="fit-button" type="button">Fit</button>
         <span id="zoom-readout">ズーム率 100%</span>
         <span>[SVG出力] [PNG出力]</span>
@@ -21,7 +31,8 @@
         <p>エラー/警告パネル</p>
       </aside>
       <main id="viewer-pane">
-        <p>ビューワーペイン(Excalidrawホワイトボード)</p>
+        <div id="level-badge"></div>
+        <div id="excalidraw-container"></div>
       </main>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -58,3 +58,31 @@ body {
   position: relative;
   overflow: hidden;
 }
+
+#excalidraw-container {
+  position: absolute;
+  inset: 0;
+}
+
+/* FR-5.6: ビューワー内バッジ(常時、現在の描画レベルを表示)。Excalidrawはviewer-pane内の
+   #excalidraw-containerにReactルートとして完全にマウントされる(host.tsxのcreateRoot)ため、
+   バッジは兄弟要素として独立させ、Excalidrawの再描画に巻き込まれないようにする。 */
+#level-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(17, 104, 189, 0.9);
+  color: #fff;
+  font-weight: bold;
+  font-size: 14px;
+  pointer-events: none;
+}
+
+#level-controls button.active {
+  background: #1168bd;
+  color: #fff;
+  font-weight: bold;
+}

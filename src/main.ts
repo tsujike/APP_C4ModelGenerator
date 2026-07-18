@@ -1,27 +1,60 @@
 import './style.css';
-import { createCameraController } from './camera/camera';
+import { createCameraController, type CameraController } from './camera/camera';
+import {
+  createLevelController,
+  type LevelController,
+  type LevelData,
+} from './camera/levelController';
 import { mountExcalidraw, type ExcalidrawHost } from './excal/host';
 import { layout } from './layout/layout';
 import { buildModel } from './model/build';
 import { project } from './model/project';
+import type { C4Model, Level } from './model/types';
 import { toExcalidraw } from './render/toExcalidraw';
 import { internetBankingSample } from './samples/internet-banking';
 
-// T2-2: サンプル→統一モデル→射影→レイアウト→Excalidraw要素、の配線。
-// T2-3: マウント後にカメラ監視/Fit/正規化(camera/camera.ts)を配線する。
-// レベル切替・アンカー保存(T3-2)はここでは行わず、L2固定で表示する。
+const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4];
+/** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
+const INITIAL_LEVEL: Level = 2;
+
+// サンプル→統一モデル→(全レベル分の)射影→レイアウト→Excalidraw要素、の配線。
+// マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+アンカー保存(T3-2)を配線する。
 async function bootstrap(): Promise<void> {
-  const viewerPane = document.getElementById('viewer-pane');
-  if (viewerPane === null) throw new Error('#viewer-pane が見つかりません。');
-  viewerPane.replaceChildren(); // index.htmlの骨格表示用プレースホルダを除去する。
+  const excalidrawContainer = document.getElementById('excalidraw-container');
+  if (excalidrawContainer === null) throw new Error('#excalidraw-container が見つかりません。');
 
   const { model } = buildModel(internetBankingSample);
-  const projected = project(model, 2);
-  const layoutResult = await layout(model, projected);
-  const elements = toExcalidraw(layoutResult);
-  const host = mountExcalidraw(viewerPane, elements);
+  const levelData = await buildLevelData(model);
 
-  setupCamera(host);
+  const initialData = levelData.get(INITIAL_LEVEL);
+  // ALL_LEVELSの全レベルをbuildLevelDataで計算済みのため到達しない分岐。
+  if (initialData === undefined)
+    throw new Error('unreachable: 初期レベルのlevelDataが見つかりません。');
+
+  const host = mountExcalidraw(excalidrawContainer, initialData.elements);
+  const camera = setupCamera(host);
+  const levelController = createLevelController(host, camera, model, levelData, INITIAL_LEVEL);
+  setupLevelControls(levelController);
+}
+
+/**
+ * 表示レベル1〜4すべての LayoutResult+Excalidraw要素を計算する(設計書§3「レベル別レイアウトは
+ * 遅延生成でよい。テキスト変更で全キャッシュ破棄」に対する判断: 本サンプルはノード十数個規模で
+ * 4レベル合計の計算も軽量なため、遅延生成の複雑さ(初回訪問時計算+キャッシュ管理)を導入せず、
+ * 起動時に一括計算する方を単純さ優先で選んだ。NFR-3の負荷規模(200ノード/300エッジ)でも
+ * 「解析+全レベルレイアウト再計算が1秒以内」が要件であり、起動時一括計算はこの要件そのものと
+ * 整合する。テキスト編集によるキャッシュ破棄(T4スコープ)は本タスクの対象外)。
+ */
+async function buildLevelData(model: C4Model): Promise<Map<Level, LevelData>> {
+  const entries = await Promise.all(
+    ALL_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {
+      const projected = project(model, level);
+      const layoutResult = await layout(model, projected);
+      const elements = toExcalidraw(layoutResult);
+      return [level, { layout: layoutResult, elements }];
+    }),
+  );
+  return new Map(entries);
 }
 
 /**
@@ -29,7 +62,7 @@ async function bootstrap(): Promise<void> {
  * ExcalidrawのAPI(updateScene/scrollToContent等)へは直接触れず、必ずcamera.ts越しに操作する
  * (実装指示書§4)。
  */
-function setupCamera(host: ExcalidrawHost): void {
+function setupCamera(host: ExcalidrawHost): CameraController {
   const camera = createCameraController(host);
   const fitButton = document.getElementById('fit-button');
   const zoomReadout = document.getElementById('zoom-readout');
@@ -48,6 +81,43 @@ function setupCamera(host: ExcalidrawHost): void {
 
   // 起動直後に一度だけFitし、その直後のzoom.valueをz0として確定する(設計書§8.1)。
   camera.fitAndEstablishZ0();
+  return camera;
+}
+
+/**
+ * T3-2: レベル手動固定(L1〜L4)/AUTOのツールバーボタンを配線し、現在レベルをツールバー文言と
+ * ビューワー内バッジの両方に表示する(FR-5.6: 「ツールバーとビューワー内バッジに常時表示」を
+ * 文字どおり両方実装する解釈。申し送り)。
+ */
+function setupLevelControls(levelController: LevelController): void {
+  const levelButtons = new Map(
+    ALL_LEVELS.map(
+      (level) => [level, document.getElementById(`level-button-${String(level)}`)] as const,
+    ),
+  );
+  const autoButton = document.getElementById('level-auto-button');
+  const statusEl = document.getElementById('level-status');
+  const badgeEl = document.getElementById('level-badge');
+
+  for (const [level, button] of levelButtons) {
+    button?.addEventListener('click', () => {
+      levelController.lockTo(level);
+    });
+  }
+  autoButton?.addEventListener('click', () => {
+    levelController.setAuto();
+  });
+
+  levelController.subscribe((state) => {
+    for (const [level, button] of levelButtons) {
+      button?.classList.toggle('active', level === state.level);
+    }
+    autoButton?.classList.toggle('active', state.levelLock === null);
+
+    const modeLabel = state.levelLock === null ? 'AUTO' : '固定';
+    if (statusEl !== null) statusEl.textContent = `現在: L${String(state.level)} (${modeLabel})`;
+    if (badgeEl !== null) badgeEl.textContent = `L${String(state.level)}`;
+  });
 }
 
 void bootstrap();

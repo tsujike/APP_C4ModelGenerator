@@ -28,6 +28,9 @@ function createMockHost(): {
     fitToContent(onApplied) {
       fitCallbacks.push(onApplied);
     },
+    // T3-2で追加されたメソッド(camera.tsは使わないため、このテストでは未使用)。
+    getAnchorWorldPoint: () => null,
+    applyLevelSwitch: vi.fn(),
   };
 
   return {
