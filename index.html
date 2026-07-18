@@ -9,7 +9,14 @@
   <body>
     <div id="app">
       <header id="toolbar">
-        <span>ツールバー: [サンプル&#9662;]</span>
+        <span>
+          サンプル:
+          <select id="sample-select">
+            <option value="" disabled selected>読み込む...</option>
+            <option value="internet-banking">インターネットバンキング</option>
+            <option value="ec-site">ECサイト</option>
+          </select>
+        </span>
         <span id="level-controls">
           レベル:
           <button id="level-button-1" type="button" data-level="1">L1</button>
@@ -27,8 +34,14 @@
       <section id="editor-pane">
         <div id="editor-mount"></div>
       </section>
+      <div
+        id="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="エディタ列とビューワー列の境界"
+      ></div>
       <aside id="issues-panel">
-        <p>エラー/警告パネル</p>
+        <div id="issues-panel-mount"></div>
       </aside>
       <main id="viewer-pane">
         <div id="level-badge"></div>

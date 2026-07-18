@@ -16,7 +16,7 @@
 - [x] T3-1 レベル判定(lod)
 - [x] T3-2 レベル切替+アンカー保存
 - [x] T4-1 CodeMirror+ライブ更新
-- [ ] T4-2 エラーパネル+永続化+サンプルメニュー
+- [x] T4-2 エラーパネル+永続化+サンプルメニュー
 - [ ] T5-1 エクスポート(exportToSvg/exportToBlob)
 - [ ] T5-2 性能確認+README+最終検証
 
@@ -345,3 +345,63 @@
     `npm run build`すべて成功を確認(指揮者による独立再検証込み)。
   - スコープ境界: localStorage永続化(FR-1.4)・サンプル読込メニュー(FR-1.5)・issuesPanel UI・
     スプリッターは未着手(T4-2)。補完・lint gutterは実装しない(指示書「やらないこと」)。
+- (2026-07-18) **T4-2完了。** `ui/issuesPanel.ts`(FR-2.2のエラー/警告パネル)・`ui/splitter.ts`
+  (ペイン幅のドラッグリサイズ)・`samples/ec-site.ts`(2件目の組込サンプル、FR-1.5の
+  「最低2件」充足)を新規実装。`ui/editor.ts`に`jumpToLine`(行クリックジャンプ)・
+  `setValue`(サンプル読込での丸ごと差し替え)・`loadPersistedSource`/`savePersistedSource`
+  (FR-1.4のlocalStorage永続化)を追加。`index.html`のサンプルプレースホルダを実`<select>`に、
+  issues-panelを実DOM描画に置き換えた。
+  - **issuesPanel設計**: `formatIssue`(severity→日本語ラベル/CSSクラス+`L<行>: <message>`の
+    純粋整形関数、DOM非依存でテスト可能)+`createIssuesPanel`(クリック可能な`<button>`一覧を
+    描画、クリックで`onJumpToLine`経由``editor.jumpToLine`を呼ぶ)。`EditorController.jumpToLine`
+    はCodeMirrorの`EditorSelection.cursor`+`scrollIntoView`でカーソル移動・スクロール・
+    フォーカスを行う。0件時は「問題なし」の1行のみ描画し、`#issues-panel`の`grid-template-rows`
+    が`auto`のため専用の開閉UIなしで自然に折りたたまれる(最単純解釈)。
+  - **localStorage設計**: キー`c4-model-whiteboard-viewer:source`、ペイロードは
+    `{v: 1, source: string}`のJSON(生の文字列ではなくバージョン付き封筒形式にし、「破損」の
+    意味をより厳密に表現する判断)。`getItem`失敗・JSON parse失敗・形状不一致・バージョン
+    不一致はすべて「破損」として同列にnullを返し、呼び出し側(main.ts)が初期サンプルへ
+    フォールバックする。保存は`editor.subscribe`の**既存の300msデバウンス済み通知**に
+    リスナーを追加するだけで、新規のデバウンスタイマーは作らない(T4-1が確立した
+    「1関心事=1コントローラ」パターンの継続)。
+  - **サンプル読込**: `<select id="sample-select">`の`change`で即座に選択値をプレースホルダへ
+    戻し(同じサンプルの再選択でも`change`が再発火するように)、`window.confirm(...)`で
+    現ソース破棄の確認を取る。承諾時のみ`editor.setValue(source)`(通常の編集パイプラインに
+    そのまま乗る=再解析・localStorage保存も自動で走る)。キャンセル時は無変化。カスタム
+    モーダルではなくネイティブ`confirm()`を採用(UIフレームワーク不使用の方針、単純な
+    同期yes/noゲートには十分)。
+  - **`samples/ec-site.ts`**: L1(`Person(customer)`・`System(ec)`・`System_Ext(payment)`)+
+    L2(`System_Boundary(ec)`内にContainer 3つ: web/React、api/Node.js-Express、db/PostgreSQL)
+    のみ。C4Component/classDiagramブロックは意図的に無し(FR-5.7の「L3以降未定義」の
+    実機テストケースを兼ねる)。
+  - **スプリッター**: 純粋関数`computeColumnWidth(startWidth, deltaX, containerWidth)`
+    (`constants.ts`の`SPLITTER`定数でクランプ)+`createSplitter`(pointerdown/move/upで
+    `#app`の`--editor-col-width`カスタムプロパティを更新)。CSS Gridを
+    `var(--editor-col-width) 6px 1fr`の3列構成に変更。「スプリッター」という単数形の表現と
+    §4の画面図に合わせ、エディタ列とビューワー列の間の縦方向1本のみ実装(エディタペインと
+    issues-panelの間には設けない)。
+  - **独立検証(指揮者自身が追加実施、実機Playwright)**: 受入基準3を明示的に確認 —
+    正常なサンプルは「問題なし」、`Rel(customer, doesNotExistAlias, ...)`を追加すると
+    `[エラー] L9: ...`が表示され、該当行を削除して修復すると「問題なし」に戻ることを確認。
+    受入基準4を明示的に確認 — Personのlabelに一意なマーカー文字列を追記して800ms待った後
+    ページをリロードし、マーカーがエディタに残っていること(初期サンプルに戻らないこと)を
+    確認。サンプルメニューでは`window.confirm`のダイアログテキスト
+    (「現在のソースを破棄して「ECサイト」サンプルを読み込みます。よろしいですか?」)を
+    実際に受信し、承諾後にエディタ内容がECサイトサンプルへ切り替わることを確認。
+    スプリッターは150pxドラッグでeditor-paneの幅が320px→470pxへ(ドラッグ量と正確に一致)
+    変化することを確認。
+  - 仕様上の判断・申し送り:
+    1. 「破損時は無視」をバージョン付きJSON封筒形式で実装(「破損」の意味論をより厳密にする
+       ための判断。生文字列保存でも要件は満たせたが、形式不一致を検出できる利点を優先)。
+    2. issues 0件時の「折りたたみ」は、専用の開閉ウィジェットではなく最小コンテンツによる
+       グリッド行の自然な縮小で表現(要件・設計書のどちらにも専用UIの指定が無いため)。
+    3. サンプル切替も通常の300msデバウンス編集パイプラインを経由させる(「サンプル読込→
+       即座に反映」ではなく、他の編集操作と同じ経路に統一。仕様が「現ソースを破棄する旨を
+       確認する」としか言っておらず、反映タイミングまでは指定していないための最単純解釈)。
+  - テスト: `tests/ui/issuesPanel.test.ts`・`tests/ui/splitter.test.ts`を新規追加、
+    `tests/ui/editor.test.ts`にlocalStorage関連ケースを追加。`npm test`
+    (19 test files / 189 tests 緑)・`tsc --noEmit`・`npm run lint`・`npm run build`すべて
+    成功を確認(指揮者による独立再検証込み)。新規npm依存は無し(既存のCodeMirror 6/DOM API/
+    localStorageのみで実装)。
+  - スコープ境界: T5(SVG/PNGエクスポート)は未着手、エクスポートボタンは引き続き
+    プレースホルダのまま。`parser/`・`model/`・`layout/`・`render/`には一切手を入れていない。

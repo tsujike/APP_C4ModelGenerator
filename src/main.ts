@@ -10,28 +10,50 @@ import { layout } from './layout/layout';
 import { buildModel } from './model/build';
 import { project } from './model/project';
 import type { C4Model, Level } from './model/types';
-import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
+import { ecSiteSample } from './samples/ec-site';
 import { internetBankingSample } from './samples/internet-banking';
-import { createEditor, type EditorController } from './ui/editor';
+import {
+  createEditor,
+  loadPersistedSource,
+  savePersistedSource,
+  type EditorController,
+} from './ui/editor';
+import { createIssuesPanel, type IssuesPanelController } from './ui/issuesPanel';
+import { createSplitter } from './ui/splitter';
 
 const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4];
 /** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
 const INITIAL_LEVEL: Level = 2;
 
-// サンプル→統一モデル→(全レベル分の)射影→レイアウト→Excalidraw要素、の配線。
-// マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+アンカー保存(T3-2)、
-// エディタ+ライブ再解析(T4-1)を配線する。
+/** サンプルメニュー(FR-1.5)に列挙する組込サンプル。「最低2件」をこのタスクで充足する。 */
+const SAMPLES: ReadonlyArray<{ id: string; label: string; source: string }> = [
+  { id: 'internet-banking', label: 'インターネットバンキング', source: internetBankingSample },
+  { id: 'ec-site', label: 'ECサイト', source: ecSiteSample },
+];
+
+// サンプル(またはlocalStorageからの復元、FR-1.4)→統一モデル→(全レベル分の)射影→レイアウト→
+// Excalidraw要素、の配線。マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+
+// アンカー保存(T3-2)、エディタ+ライブ再解析(T4-1)、issuesパネル/永続化/サンプルメニュー/
+// スプリッター(T4-2)を配線する。
 async function bootstrap(): Promise<void> {
   const excalidrawContainer = document.getElementById('excalidraw-container');
   if (excalidrawContainer === null) throw new Error('#excalidraw-container が見つかりません。');
   const editorContainer = document.getElementById('editor-mount');
   if (editorContainer === null) throw new Error('#editor-mount が見つかりません。');
+  const issuesMount = document.getElementById('issues-panel-mount');
+  if (issuesMount === null) throw new Error('#issues-panel-mount が見つかりません。');
 
-  const editor = createEditor(editorContainer, internetBankingSample);
+  // FR-1.4: 起動時にlocalStorageからの復元を試みる。無い/壊れている場合は初期サンプルへ
+  // 静かにフォールバックする(loadPersistedSourceがその判定を内包する。ui/editor.ts参照)。
+  const initialSource = loadPersistedSource(window.localStorage) ?? internetBankingSample;
+  const editor = createEditor(editorContainer, initialSource);
+  const issuesPanel = createIssuesPanel(issuesMount, (line) => {
+    editor.jumpToLine(line);
+  });
 
   const { model, issues } = buildModel(editor.getValue());
-  reportIssues(issues);
+  issuesPanel.update(issues);
   const levelData = await buildLevelData(model);
 
   const initialData = levelData.get(INITIAL_LEVEL);
@@ -43,7 +65,10 @@ async function bootstrap(): Promise<void> {
   const camera = setupCamera(host);
   const levelController = createLevelController(host, camera, model, levelData, INITIAL_LEVEL);
   setupLevelControls(levelController);
-  setupLiveEditing(editor, levelController);
+  setupLiveEditing(editor, levelController, issuesPanel);
+  setupPersistence(editor);
+  setupSampleMenu(editor);
+  setupSplitter();
 }
 
 /**
@@ -51,31 +76,81 @@ async function bootstrap(): Promise<void> {
  * 射影/レイアウト/Excalidraw要素変換をやり直し、levelControllerへ丸ごと差し替える。
  * これが「レイアウトキャッシュ破棄」の実体(古いlevelDataを一切再利用せず、毎回
  * buildLevelDataで新規に作り直したMapに完全入れ替えする)。
+ * T4-2で追加: 同じ再解析結果のissuesをissuesPanelにも反映する(FR-2.2)。
  *
  * カメラ(scroll/zoom)には一切触れない(levelController.updateModelがhost.updateElementsのみを
  * 呼ぶため。FR-1.3)。
  */
-function setupLiveEditing(editor: EditorController, levelController: LevelController): void {
+function setupLiveEditing(
+  editor: EditorController,
+  levelController: LevelController,
+  issuesPanel: IssuesPanelController,
+): void {
   editor.subscribe((source) => {
-    void reparseAndRerender(source, levelController);
+    void reparseAndRerender(source, levelController, issuesPanel);
   });
 }
 
-async function reparseAndRerender(source: string, levelController: LevelController): Promise<void> {
+async function reparseAndRerender(
+  source: string,
+  levelController: LevelController,
+  issuesPanel: IssuesPanelController,
+): Promise<void> {
   const { model, issues } = buildModel(source);
-  reportIssues(issues);
+  issuesPanel.update(issues);
   const levelData = await buildLevelData(model);
   levelController.updateModel(model, levelData);
 }
 
 /**
- * 解析/整合性エラー・警告の報告先(T4-1時点ではUIパネル未実装。issuesPanelはT4-2のスコープ)。
- * FR-2.2のパネル表示は行わないが、issuesそのものを握りつぶさずコンソールに出す(申し送り:
- * 完全な無視ではなく開発者が確認できる最小限の経路を残した)。
+ * T4-2: FR-1.4のlocalStorage自動保存。`editor.subscribe`は既に300msデバウンス済みの通知
+ * (ui/editor.ts参照)であり、ここで新しいデバウンスタイマーは作らない
+ * (setupLiveEditingの再解析用リスナーと同じ1つの通知に相乗りする)。
  */
-function reportIssues(issues: readonly ParseIssue[]): void {
-  if (issues.length === 0) return;
-  console.log(`[C4] 解析issues: ${String(issues.length)}件`, issues);
+function setupPersistence(editor: EditorController): void {
+  editor.subscribe((source) => {
+    savePersistedSource(window.localStorage, source);
+  });
+}
+
+/**
+ * T4-2: サンプル読込メニュー(FR-1.5)。選択時、現ソースを破棄する旨を`confirm()`で確認してから
+ * `editor.setValue`で差し替える。キャンセル時は何もしない。
+ *
+ * 実装判断(申し送り): 確認ダイアログはブラウザ標準の`window.confirm`を採用した。本アプリは
+ * UIフレームワーク・状態管理ライブラリを導入しない方針(CLAUDE.md)であり、独自モーダルを
+ * 実装するとDOM状態管理・フォーカストラップ等の作り込みが必要になり「やること」の範囲を
+ * 超える。`confirm()`はブロッキングだが、破棄確認という単発の同期的な意思確認に対しては
+ * 副作用が無く最も単純な実装である。
+ *
+ * `<select>`は選択のたびに空(プレースホルダ)へ戻す。そうしないと同じサンプルを続けて
+ * 選び直した場合に値が変化せず`change`イベントが発火しない(再読込したいケースを阻害する)。
+ */
+function setupSampleMenu(editor: EditorController): void {
+  const select = document.getElementById('sample-select');
+  if (!(select instanceof HTMLSelectElement)) return;
+
+  select.addEventListener('change', () => {
+    const chosenId = select.value;
+    select.value = '';
+    const chosen = SAMPLES.find((s) => s.id === chosenId);
+    if (chosen === undefined) return;
+
+    const discard = window.confirm(
+      `現在のソースを破棄して「${chosen.label}」サンプルを読み込みます。よろしいですか?`,
+    );
+    if (!discard) return;
+
+    editor.setValue(chosen.source);
+  });
+}
+
+/** T4-2: エディタ列/ビューワー列のスプリッター(要件定義書§4)を配線する。 */
+function setupSplitter(): void {
+  const handle = document.getElementById('splitter');
+  const appEl = document.getElementById('app');
+  if (handle === null || appEl === null) return;
+  createSplitter(handle, appEl);
 }
 
 /**

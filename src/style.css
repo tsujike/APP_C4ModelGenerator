@@ -18,12 +18,14 @@ body {
 
 #app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  /* T4-2: 第1カラム幅はスプリッター(ui/splitter.ts)がCSS変数経由でドラッグ操作に応じて
+     書き換える。未操作時は既定の320px(constants.tsのSPLITTER.defaultColumnWidthと同値)。 */
+  grid-template-columns: var(--editor-col-width, 320px) 6px 1fr;
   grid-template-rows: auto 1fr auto;
   grid-template-areas:
-    'toolbar toolbar'
-    'editor viewer'
-    'issues viewer';
+    'toolbar toolbar toolbar'
+    'editor splitter viewer'
+    'issues splitter viewer';
   height: 100vh;
   width: 100vw;
 }
@@ -58,12 +60,65 @@ body {
   height: 100%;
 }
 
+/* T4-2: エディタ列(editor-pane+issues-panel)とビューワー列の境界のドラッグハンドル
+   (要件定義書§4「エディタとビューワーの境界はドラッグでリサイズ可能」)。 */
+#splitter {
+  grid-area: splitter;
+  cursor: col-resize;
+  background: #ddd;
+  touch-action: none;
+}
+
+#splitter:hover,
+#splitter:active {
+  background: #1168bd;
+}
+
 #issues-panel {
   grid-area: issues;
   border-right: 1px solid #ccc;
   border-top: 1px solid #ccc;
   overflow: auto;
   padding: 8px;
+}
+
+/* T4-2: issuesPanel(FR-2.2)。0件時はEMPTY_MESSAGEのみで最小限の高さになり、
+   grid-template-rowsのauto指定により自然に折りたたまれる(要件定義書§4)。 */
+#issues-panel .issues-empty {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+}
+
+#issues-panel .issues-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#issues-panel .issue-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 4px 6px;
+  margin: 2px 0;
+  text-align: left;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#issues-panel .issue-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+#issues-panel .issue-error .issue-item {
+  color: #b00020;
+}
+
+#issues-panel .issue-warning .issue-item {
+  color: #8a6100;
 }
 
 #viewer-pane {

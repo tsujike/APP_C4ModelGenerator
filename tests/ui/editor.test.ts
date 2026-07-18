@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { classifyKeyword, debounce } from '../../src/ui/editor';
+import {
+  classifyKeyword,
+  debounce,
+  loadPersistedSource,
+  savePersistedSource,
+} from '../../src/ui/editor';
+import { STORAGE_KEY, STORAGE_VERSION } from '../../src/constants';
 
 describe('debounce', () => {
   beforeEach(() => {
@@ -106,5 +112,83 @@ describe('classifyKeyword', () => {
     expect(classifyKeyword('ibs')).toBeNull();
     expect(classifyKeyword('AccountService')).toBeNull();
     expect(classifyKeyword('SystemXyz')).toBeNull();
+  });
+});
+
+/**
+ * `window.localStorage`全体をvitest(environment: 'node')でモックする代わりに、
+ * `loadPersistedSource`/`savePersistedSource`が要求する最小限のインターフェース
+ * (`Pick<Storage, 'getItem'|'setItem'>`)だけを持つフェイクを使う(実装側の設計意図どおり)。
+ */
+function createFakeStorage(initial: Record<string, string> = {}): {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  data: Record<string, string>;
+} {
+  const data: Record<string, string> = { ...initial };
+  return {
+    data,
+    getItem(key) {
+      return key in data ? data[key]! : null;
+    },
+    setItem(key, value) {
+      data[key] = value;
+    },
+  };
+}
+
+describe('loadPersistedSource / savePersistedSource (FR-1.4)', () => {
+  it('未保存(キーが無い)場合はnullを返す', () => {
+    const storage = createFakeStorage();
+    expect(loadPersistedSource(storage)).toBeNull();
+  });
+
+  it('保存した値をそのまま復元できる', () => {
+    const storage = createFakeStorage();
+    savePersistedSource(storage, 'C4Context\n  title x\n');
+    expect(loadPersistedSource(storage)).toBe('C4Context\n  title x\n');
+  });
+
+  it('JSON構文として壊れている場合はnullを返す(初期サンプルへのフォールバックを許す)', () => {
+    const storage = createFakeStorage({ [STORAGE_KEY]: '{not valid json' });
+    expect(loadPersistedSource(storage)).toBeNull();
+  });
+
+  it('形が期待どおりでない場合はnullを返す', () => {
+    const storage = createFakeStorage({ [STORAGE_KEY]: JSON.stringify({ foo: 'bar' }) });
+    expect(loadPersistedSource(storage)).toBeNull();
+  });
+
+  it('バージョン不一致の場合はnullを返す', () => {
+    const storage = createFakeStorage({
+      [STORAGE_KEY]: JSON.stringify({ v: STORAGE_VERSION + 1, source: 'x' }),
+    });
+    expect(loadPersistedSource(storage)).toBeNull();
+  });
+
+  it('getItemが例外を投げる場合はnullを返す(例: プライベートブラウジングでのアクセス拒否)', () => {
+    const storage = {
+      getItem(): string {
+        throw new Error('access denied');
+      },
+    };
+    expect(loadPersistedSource(storage)).toBeNull();
+  });
+
+  it('setItemが例外を投げても(容量超過等)呼び出し側に伝播しない', () => {
+    const storage = {
+      setItem(): void {
+        throw new Error('QuotaExceededError');
+      },
+    };
+    expect(() => {
+      savePersistedSource(storage, 'x');
+    }).not.toThrow();
+  });
+
+  it('空文字列も正当な復元値として扱う(全文削除して保存した状態)', () => {
+    const storage = createFakeStorage();
+    savePersistedSource(storage, '');
+    expect(loadPersistedSource(storage)).toBe('');
   });
 });

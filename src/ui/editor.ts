@@ -2,24 +2,31 @@
  * CodeMirror 6 エディタ(設計書 docs/02_アーキテクチャ設計書.md §2の `ui/editor.ts`)。
  *
  * T4-1のスコープ: 行番号・等幅・StreamLanguageによる最小限のシンタックスハイライト・
- * 300msデバウンスでのテキスト変更通知(FR-1.2)。localStorage永続化(FR-1.4)・サンプル読込
- * (FR-1.5)はT4-2のスコープであり、ここでは扱わない。
+ * 300msデバウンスでのテキスト変更通知(FR-1.2)。
+ * T4-2で追加: 該当行へのジャンプ(`jumpToLine`。issuesPanelのクリックから使う)、
+ * 内容の丸ごと差し替え(`setValue`。サンプル読込から使う)、localStorage永続化(FR-1.4)の
+ * 読み書き関数。
  *
  * デバウンスをここ(ui/editor.ts)に置いた理由: 設計書§2のディレクトリ構成表が
  * `ui/editor.ts` の役割を「エディタ、デバウンス、localStorage」と明記しており、
  * 「テキスト変更の生成源」と「変更通知の間引き」は同じ関心事(エディタの入力体験)である。
  * main.ts側にデバウンスを置くと、main.tsが「エディタの入力タイミング」という実装詳細まで
  * 知る必要が生じ、camera.ts/levelControllerが確立した「1関心事=1コントローラ」パターン
- * (呼び出し側は完成した状態変化だけを受け取る)から外れる。
+ * (呼び出し側は完成した状態変化だけを受け取る)から外れる。同じ理由で、localStorageへの
+ * 自動保存もmain.ts側で新しいデバウンスを作らず、`editor.subscribe`(既存の300msデバウンス済み
+ * 通知)にリスナーを1つ追加するだけにする(main.ts参照)。
  *
  * DOM操作は `excal/` と `ui/` のみに許される(実装指示書§4)。本ファイルはその `ui/` 側。
+ * localStorageの読み書きはDOM操作ではないが、設計書§2の役割表どおりここに置く。読み出しは
+ * ユーザー環境由来の値(システム境界)のため、破損時はnullを返し例外を投げない(呼び出し側=
+ * main.tsが初期サンプルへフォールバックする。実装指示書§4「防御的コードは境界のみ」)。
  */
 
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import { EditorState } from '@codemirror/state';
+import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-import { EDITOR_DEBOUNCE_MS } from '../constants';
+import { EDITOR_DEBOUNCE_MS, STORAGE_KEY, STORAGE_VERSION } from '../constants';
 
 /** 呼び出しから`ms`経過後まで実行を遅延し、その間の再呼び出しはタイマーを再スタートする(FR-1.2)。 */
 export interface Debounced<Args extends unknown[]> {
@@ -102,8 +109,73 @@ export interface EditorController {
    * 「変更が無いのに1回目が飛んでくる」ことを避けるための単純化)。
    */
   subscribe(listener: (source: string) => void): () => void;
+  /**
+   * T4-2: 該当行にカーソルを移動しスクロールして表示する(issuesPanelのクリックジャンプで使う)。
+   * `line` はソース上の1始まりの行番号。ドキュメントの行数を超える/0以下の場合は範囲内に
+   * クランプする(古いissuesのクリック等、行番号が現在の内容とずれるケースへの単純な防御)。
+   */
+  jumpToLine(line: number): void;
+  /**
+   * T4-2: エディタ内容を丸ごと差し替える(サンプル読込で使う)。通常の編集と同じ経路
+   * (`docChanged`)で300msデバウンス済み通知が飛ぶため、呼び出し側は「通常の編集パイプライン」
+   * にそのまま乗る(再解析・localStorage保存とも同じ経路。main.ts参照)。
+   */
+  setValue(source: string): void;
   /** CodeMirrorビューを破棄し、保留中のデバウンスも取り消す(後始末用)。 */
   destroy(): void;
+}
+
+/**
+ * localStorageペイロードの形式(FR-1.4)。バージョンを持たせ、形式不一致を「破損」と同列に
+ * 扱えるようにする(生の文字列をそのまま保存する案もあったが、「破損時は無視」という要件の
+ * 意味をより素直に表現できるこちらを採用)。
+ */
+interface PersistedSourcePayload {
+  v: number;
+  source: string;
+}
+
+/**
+ * localStorageからソースを復元する(FR-1.4)。以下はすべて「破損」と同じ扱いでnullを返す
+ * (呼び出し側=main.tsが初期サンプルへフォールバックする):
+ * 未保存(キーが無い)、読み出し自体が例外(プライベートブラウジング等でのアクセス拒否)、
+ * JSON構文エラー、期待する形(`{v, source}`)と不一致、バージョン不一致。
+ * `Pick<Storage, 'getItem'>` を受け取ることで、テストでは `window.localStorage` 全体ではなく
+ * 最小限のフェイクオブジェクトを渡せる。
+ */
+export function loadPersistedSource(storage: Pick<Storage, 'getItem'>): string | null {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const payload = parsed as Partial<PersistedSourcePayload>;
+  if (payload.v !== STORAGE_VERSION || typeof payload.source !== 'string') return null;
+  return payload.source;
+}
+
+/**
+ * ソースをlocalStorageへ保存する(FR-1.4)。書き込み失敗(容量超過等)は自動保存という機能の
+ * 性質上ベストエフォートでよく、致命的でないため例外を握りつぶす(実装指示書§4「防御的コードは
+ * 境界のみ」— localStorageはユーザー環境依存のシステム境界)。
+ */
+export function savePersistedSource(storage: Pick<Storage, 'setItem'>, source: string): void {
+  try {
+    const payload: PersistedSourcePayload = { v: STORAGE_VERSION, source };
+    storage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // 容量超過等は無視する(FR-1.4はベストエフォートの自動保存であり、ユーザーへの通知は要件外)。
+  }
 }
 
 /**
@@ -150,6 +222,21 @@ export function createEditor(container: HTMLElement, initialValue: string): Edit
       return () => {
         listeners.delete(listener);
       };
+    },
+    jumpToLine(line) {
+      const doc = view.state.doc;
+      const clamped = Math.min(Math.max(Math.trunc(line), 1), doc.lines);
+      const lineInfo = doc.line(clamped);
+      view.dispatch({
+        selection: EditorSelection.cursor(lineInfo.from),
+        effects: EditorView.scrollIntoView(lineInfo.from, { y: 'center' }),
+      });
+      view.focus();
+    },
+    setValue(source) {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: source },
+      });
     },
     destroy() {
       notify.cancel();

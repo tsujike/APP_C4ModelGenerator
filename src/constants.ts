@@ -25,6 +25,26 @@ export const LOD_HYSTERESIS_FACTOR = 0.9;
  */
 export const EDITOR_DEBOUNCE_MS = 300;
 
+/**
+ * localStorage永続化(FR-1.4)関連の定数。
+ * `STORAGE_VERSION` はペイロード形式のバージョン。将来形式を変える場合はこれを上げ、
+ * 旧バージョンのペイロードは(形式不一致として)破損時と同じ扱いで無視する。
+ */
+export const STORAGE_KEY = 'c4-model-whiteboard-viewer:source';
+export const STORAGE_VERSION = 1;
+
+/**
+ * スプリッター(`ui/splitter.ts`)がエディタ列(editor-pane+issues-panel)の幅をドラッグで
+ * 変更する際のクランプ値・既定値。出典: docs/01_要件定義書.md §4「エディタとビューワーの境界は
+ * ドラッグでリサイズ可能」。狭すぎ/広すぎを防ぐための上下限のみ定義し、厳密な操作性の作り込みは
+ * しない(T4-2「スプリッター…キープシンプルに」)。
+ */
+export const SPLITTER = {
+  minColumnWidth: 200,
+  maxColumnRatio: 0.7,
+  defaultColumnWidth: 320,
+} as const;
+
 /** C4要素の種別ごとの塗り色(通常/External)。 */
 export const C4_COLORS = {
   person: { fill: '#08427B', extFill: '#686868' },
