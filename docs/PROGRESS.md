@@ -8,8 +8,8 @@
 - [x] T1-1 C4ブロックパーサ
 - [x] T1-2 classDiagramパーサ
 - [x] T1-3 統一モデル構築
-- [ ] T2-0a elkjsスパイク
-- [ ] T2-0b Excalidrawカメラ制御スパイク
+- [x] T2-0a elkjsスパイク
+- [x] T2-0b Excalidrawカメラ制御スパイク
 - [ ] T2-1 エッジ射影
 - [ ] T2-2 レイアウト+Excalidraw描画(L2固定)
 - [ ] T2-3 カメラ(監視/Fit/正規化)
@@ -59,3 +59,61 @@
   classDiagram)」に固定(前方参照のalias解決を単純化するための最単純解釈。仕様に順序の
   明記はなし)。`npm test`(7 test files / 61 tests 緑)・`tsc --noEmit`・`npm run lint`・
   `npm run build` すべて成功を確認。
+- (2026-07-18) **T2-0b完了。設計の前提は成立** — Excalidrawの `onChange` によるzoom/scroll監視、
+  および `updateScene` による要素+カメラの一括プログラム制御の両方が実際に動作することを
+  ブラウザ実行で確認した。§12(自作SVGレンダラー)への回帰は不要と判断。
+  - 依存追加(バージョン固定、`^`なし): `@excalidraw/excalidraw@0.18.1` / `react@19.2.7` /
+    `react-dom@19.2.7`(いずれも本実装 `dependencies`。T2-2以降で実際に使う)。
+    devDependenciesに `@vitejs/plugin-react@6.0.3`(ビルドツール)、および型検査用に
+    `@types/react@19.2.17` / `@types/react-dom@19.2.3` / `@types/node@26.1.1` を追加。
+  - 使い捨てページ `spike-t2-0b/`(`index.html` + `main.tsx` + 専用 `vite.config.ts`/
+    `tsconfig.json`)を作成。本実装 `src/` `index.html` には未変更。`eslint.config.js` の
+    `ignores` と `.prettierignore` に `spike-t2-0b` を追加してlint/format対象外にした
+    (指示書どおり)。tsconfigの `include` は元々 `["src","tests"]` のみのため、
+    `spike-t2-0b/` は本実装の `tsc --noEmit`/`npm run build` に一切影響しない。
+  - 検証はPlaywright(このクラウド環境の `/opt/pw-browsers/chromium-1194`)でヘッドレス
+    Chromiumを起動し、`vite --config spike-t2-0b/vite.config.ts`(port 5183)で実行して確認:
+    - (1) 成立。`viewModeEnabled: true` でプログラム生成した矩形2つ(rectangle)+矢印1つ
+      (arrow、ラベル付き)が初期表示され、編集モード時に出るツールバー(`.App-toolbar`=
+      形状選択パレット等)は存在しない(count 0)ことを確認。スクリーンショット
+      `/tmp/t2-0b-01-initial.png` で図形とラベルが正しく表示されているのを目視確認済み
+      (エージェントの応答内で提示済み)。
+    - (2) 成立。ページ上部のデバッグ表示(`appState.zoom.value`/`scrollX`/`scrollY`)は
+      初期値 `zoom=1.0000, scrollX=0.00, scrollY=0.00`。Excalidrawキャンバス上で
+      Ctrl+wheelによるズーム操作(Playwrightで実発火)後、`onChange` 経由で
+      `zoom=3.4752`(Excalidraw純正のズーム%表示「348%」と一致)、その後の素のwheelパン
+      操作でも `scrollX/scrollY` が追従して変化することを確認(スクリーンショット
+      `/tmp/t2-0b-02-after-zoom.png`)。
+    - (3) 成立。「テスト実行」ボタン押下で `excalidrawAPI.updateScene({ elements, appState:
+      { scrollX, scrollY, zoom } })` を1回呼び出し、矩形の位置・色・ラベルの変更(要素側)
+      と `zoom=1.8000`(=180%)/`scrollX=-150.00`/`scrollY=-200.00`(カメラ側)が同時に
+      画面へ反映されることを確認(スクリーンショット `/tmp/t2-0b-03-after-updatescene.png`)。
+      中間状態(要素だけ変わってカメラが古いまま等)は観測されず、設計書§8.3の「1回の
+      updateSceneで要素とカメラを同時適用」という前提を裏付けた。
+  - 補足: ブラウザコンソールに `esm.sh` からのExcalifontフォント取得失敗ログが出るが、
+    これはこのサンドボックス環境のアウトバウンド制限によるCDN到達不可が原因の見た目上の
+    フォールバック(デフォルトフォントで代替描画)であり、上記(1)〜(3)の判定・
+    `updateScene`/`onChange` の成立性そのものには影響しない。
+  - 依存追加後 `npm test`(7 test files / 61 tests 緑)・`npx tsc --noEmit`・`npm run lint`・
+    `npm run build`(本実装分)すべて成功を再確認済み。
+  - 残課題・申し送り: T2-2実装時、フォントCDN(esm.sh)が到達できない実行環境では
+    Excalifont以外へのフォールバックになる点に留意(機能面は無影響、見た目のみ)。
+    `spike-t2-0b/` はこのタスクの証跡として残置(本実装に組み込まない指示のとおり)。
+- (2026-07-18) **T2-0a完了。入れ子レイアウトは成立。** 使い捨てスクリプト(`/tmp/elkjs-spike.mjs`、
+  リポジトリ外・コミット対象外)で、境界ノード1つに子ノード2つ+境界内エッジ1本、境界をまたぐ
+  エッジ2本という2階層構成を `elk.hierarchyHandling: 'INCLUDE_CHILDREN'` でレイアウトし、
+  全ノード(親・子とも)の座標(x,y,width,height)とエッジのルーティング情報(sections)が
+  取得できることを確認した。
+  - **重要な仕様確認**: 子ノードの `x,y` は**親のローカル座標系**(親の左上原点からの相対値)
+    であり絶対座標ではない。絶対座標を得るには祖先ノードの座標を再帰的に加算する必要がある
+    (実測値で検算し一致を確認)。エッジの `sections` も、どのノードの `edges` 配列に属するか
+    (`container`フィールド)によって座標系が変わる(境界内エッジ=ローカル、ルート直下エッジ=
+    実質グローバル)。**T2-2の`layout.ts`実装時、elkjs結果→LayoutResult変換で祖先オフセットの
+    累積加算(ノード・エッジ両方)が必須**(設計書§7.1の「ノードごとの絶対座標」を満たすため)。
+  - 依存追加: `elkjs`(`package.json`に`"elkjs": "^0.12.0"`、実解決0.12.0。Excalidraw/react系のみ
+    バージョン固定規約のためelkjsはcaret付きのままでよい)。
+  - `npm test`(7 files/61 tests 緑)・`tsc --noEmit`・`npm run lint`・`npm run build` すべて
+    成功を再確認済み(依存追加による影響なし)。
+  - 残課題: 今回は2階層のみ検証。3階層以上のネスト(境界の中に境界。L4クラス図をComponent
+    境界内に置く構成)での座標系の挙動はT2-2実装時に改めて確認が必要。ノード寸法は固定値で
+    与えたため、実際のテキスト寸法見積り(`ctx.measureText`)との組み合わせも未検証(T2-2の範囲)。
