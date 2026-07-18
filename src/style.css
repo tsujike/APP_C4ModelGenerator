@@ -1,0 +1,56 @@
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    'toolbar toolbar'
+    'editor viewer'
+    'issues viewer';
+  height: 100vh;
+  width: 100vw;
+}
+
+#toolbar {
+  grid-area: toolbar;
+  border-bottom: 1px solid #ccc;
+  padding: 8px 12px;
+}
+
+#editor-pane {
+  grid-area: editor;
+  border-right: 1px solid #ccc;
+  overflow: auto;
+  padding: 8px;
+}
+
+#issues-panel {
+  grid-area: issues;
+  border-right: 1px solid #ccc;
+  border-top: 1px solid #ccc;
+  overflow: auto;
+  padding: 8px;
+}
+
+#viewer-pane {
+  grid-area: viewer;
+  position: relative;
+  overflow: hidden;
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>C4 Model Whiteboard Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="toolbar">
+        <span
+          >ツールバー: [サンプル&#9662;] [レベル: L1 L2 L3 L4 | AUTO] [Fit] [ズーム率 120%]
+          [SVG出力] [PNG出力]</span
+        >
+      </header>
+      <section id="editor-pane">
+        <p>エディタペイン(テキスト入力)</p>
+      </section>
+      <aside id="issues-panel">
+        <p>エラー/警告パネル</p>
+      </aside>
+      <main id="viewer-pane">
+        <p>ビューワーペイン(SVGホワイトボード)</p>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
