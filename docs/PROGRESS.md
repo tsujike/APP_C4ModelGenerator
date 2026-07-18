@@ -10,7 +10,7 @@
 - [x] T1-3 統一モデル構築
 - [x] T2-0a elkjsスパイク
 - [x] T2-0b Excalidrawカメラ制御スパイク
-- [ ] T2-1 エッジ射影
+- [x] T2-1 エッジ射影
 - [ ] T2-2 レイアウト+Excalidraw描画(L2固定)
 - [ ] T2-3 カメラ(監視/Fit/正規化)
 - [ ] T3-1 レベル判定(lod)
@@ -117,3 +117,28 @@
   - 残課題: 今回は2階層のみ検証。3階層以上のネスト(境界の中に境界。L4クラス図をComponent
     境界内に置く構成)での座標系の挙動はT2-2実装時に改めて確認が必要。ノード寸法は固定値で
     与えたため、実際のテキスト寸法見積り(`ctx.measureText`)との組み合わせも未検証(T2-2の範囲)。
+- (2026-07-18) **T2-1完了。** `src/model/project.ts` に純関数 `project(model, level): ProjectedGraph`
+  を実装(設計書§6のアルゴリズム)。(1) 各エッジのfrom/toを祖先チェーンに沿って「boundaryノード
+  (Enterprise_Boundary、kind='boundary')を読み飛ばしつつ、level<=表示レベルの最初のノード」へ
+  射影、(2) 射影後にfrom===toとなったエッジは破棄(自己ループ除去)、(3) 射影後の
+  `(from, to, bidirectional)` が同じエッジ群を1本に集約、代表ラベル/technologyは
+  `|declaredLevel-表示レベル|`最小(同値なら浅い方)のエッジから採用し、集約数2以上なら
+  ラベル末尾に` (+k)`を付与。完了条件のサンプル確認(L1表示で `api→email`/`notification→email`
+  が `ibs→email` に集約され`mergedCount:3`)をテストで明示的に確認済み。
+  - 仕様上の曖昧点の解釈(申し送り):
+    1. 射影先が見つからない場合(Rel端点がboundaryノード自身を直接参照する等の想定外入力)は
+       エッジを描画対象から除外する(`build.ts`の未解決alias時の扱いと同じ方針)。
+    2. 集約時、代表エッジのlabelが`undefined`の場合の`(+k)`表記は`(+k)`単独とした
+       (` (+k)`や`undefined (+k)`ではなく)。
+    3. 代表選択で`|declaredLevel-表示レベル|`と`declaredLevel`の両方が同値の完全同点時は、
+       `model.edges`内で先に出現した方を採用(alias重複時の「初出優先」と同じ考え方)。
+    4. `ProjectedEdge`/`ProjectedGraph`型は`model/types.ts`ではなく`project.ts`内にローカル定義
+       (現時点で他に必要とする箇所が無いため、変更を最小限にとどめた)。
+  - なお、§6の「射影後の端点が展開中の境界ノード自身になるエッジは境界枠に接続して描画する」は
+    kind='boundary'ノードとは無関係(§4よりkind='boundary'はEnterprise_Boundary専用で常に
+    射影先にならない)。これは「子を持つSystem/Container/Componentノードを展開枠スタイルで描く」
+    というT2-2(render)側の表示上の扱いであり、project.tsの射影先選択には影響しない
+    (射影は通常どおりそのノード自身に対して行われる)。
+  - テスト: `tests/model/project.test.ts`(単体16件)・`tests/model/project.snapshot.test.ts`
+    (internet-bankingサンプルをL1〜L4全レベルで検証、7件)を追加。`npm test`
+    (9 test files / 84 tests 緑)・`tsc --noEmit`・`npm run lint`・`npm run build` すべて成功を確認。
