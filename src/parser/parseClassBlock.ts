@@ -9,48 +9,19 @@
  *
  * `parser/` は純関数のみ(DOM操作禁止)というコーディング規約に従う。
  *
- * NOTE: `src/parser/types.ts` は T1-1 が新規作成する可能性があるため、本ファイルは
- * それに依存せず、必要な型をすべてローカルに定義する。T1-3 統合時に指揮者側で整理する。
+ * 型定義は `parser/types.ts` に統合済み(T1-3)。他モジュール(model/build.ts等)からの
+ * 参照互換のため、このファイルからも re-export する。
  */
 
-/** classDiagram ブロック本文の1行。行番号はエディタでのジャンプ・エラー表示に使う。 */
-export interface ClassBlockLine {
-  readonly line: number;
-  readonly text: string;
-}
+import type {
+  ClassBlockAst,
+  ClassBlockLine,
+  ClassDeclNode,
+  ClassEdgeArrow,
+  ClassEdgeNode,
+} from './types';
 
-/** サポートする矢印種別。継承(`--|>`)のみ描画時に白抜き三角として区別される。 */
-export type ClassEdgeArrow = '-->' | '--|>' | '*--' | 'o--' | '..>';
-
-/** `class Name { ... }` から得られるクラスノード。 */
-export interface ClassDeclNode {
-  readonly kind: 'class';
-  readonly name: string;
-  readonly fields: string[];
-  readonly methods: string[];
-  readonly sourceLine: number;
-}
-
-/** クラス間の関係を表すエッジノード。declaredLevel=4 は呼び出し側(model層)の責務。 */
-export interface ClassEdgeNode {
-  readonly kind: 'edge';
-  readonly from: string;
-  readonly to: string;
-  readonly arrow: ClassEdgeArrow;
-  readonly label?: string;
-  readonly sourceLine: number;
-}
-
-/**
- * classDiagram ブロック1つ分のAST。
- * codeOf は `%% code-of: <componentAlias>` 指令の値。指令行の抽出自体は
- * splitBlocks(T1-1)の担当のため、ここでは呼び出し側から渡された値をそのまま保持するだけでよい。
- */
-export interface ClassBlockAst {
-  readonly codeOf: string | undefined;
-  readonly classes: ClassDeclNode[];
-  readonly edges: ClassEdgeNode[];
-}
+export type { ClassBlockAst, ClassBlockLine, ClassDeclNode, ClassEdgeArrow, ClassEdgeNode };
 
 // `class Name { <inline body> }` が1行に収まっているケース。
 const INLINE_CLASS_RE = /^class\s+(\w+)\s*\{(.*)\}\s*$/;

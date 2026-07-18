@@ -1,5 +1,5 @@
 /**
- * パーサ全体(splitBlocks / parseC4Block / 将来のparseClassBlock)で共有する型定義。
+ * パーサ全体(splitBlocks / parseC4Block / parseClassBlock)で共有する型定義。
  * parser/ はDOM非依存の純関数のみで構成する(実装指示書§4)。
  */
 
@@ -86,4 +86,45 @@ export interface C4BlockAst {
 export interface ParseC4BlockResult {
   ast: C4BlockAst;
   issues: ParseIssue[];
+}
+
+// ---- classDiagram ブロックのAST(T1-2で定義、T1-3で本ファイルに統合) ----
+
+/** classDiagram ブロック本文の1行。行番号はエディタでのジャンプ・エラー表示に使う。 */
+export interface ClassBlockLine {
+  readonly line: number;
+  readonly text: string;
+}
+
+/** サポートする矢印種別。継承(`--|>`)のみ描画時に白抜き三角として区別される。 */
+export type ClassEdgeArrow = '-->' | '--|>' | '*--' | 'o--' | '..>';
+
+/** `class Name { ... }` から得られるクラスノード。 */
+export interface ClassDeclNode {
+  readonly kind: 'class';
+  readonly name: string;
+  readonly fields: string[];
+  readonly methods: string[];
+  readonly sourceLine: number;
+}
+
+/** クラス間の関係を表すエッジノード。declaredLevel=4 は呼び出し側(model層)の責務。 */
+export interface ClassEdgeNode {
+  readonly kind: 'edge';
+  readonly from: string;
+  readonly to: string;
+  readonly arrow: ClassEdgeArrow;
+  readonly label?: string;
+  readonly sourceLine: number;
+}
+
+/**
+ * classDiagram ブロック1つ分のAST。
+ * codeOf は `%% code-of: <componentAlias>` 指令の値。指令行の抽出自体は
+ * splitBlocks(T1-1)の担当のため、ここでは呼び出し側から渡された値をそのまま保持するだけでよい。
+ */
+export interface ClassBlockAst {
+  readonly codeOf: string | undefined;
+  readonly classes: ClassDeclNode[];
+  readonly edges: ClassEdgeNode[];
 }
