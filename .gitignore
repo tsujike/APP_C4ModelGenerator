@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# クラウド指揮者⇄デバイス間の同期用スクラッチ(タスクごとのtarball転送・git内部の
+# stale lock/tmpファイル退避先)。誤コミット(2026-07-18 010301b)の再発防止のため追加。
+_to_delete/
+_*-sync.tar.gz
