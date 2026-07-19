@@ -107,3 +107,7 @@ export const LOD_HYSTERESIS_FACTOR = 0.9;
 ## 技術スタック
 
 Vite / TypeScript(strict) / vitest / ESLint+Prettier / elkjs(レイアウト) / `@excalidraw/excalidraw`(描画。react/react-domはそのホストとしてのみ同梱) / CodeMirror 6(エディタ)。アプリ自体のUI(ツールバー・エディタ周辺・パネル)にはUIフレームワークを使わず、Vanilla TypeScript + DOM操作で構成しています。
+
+## ライセンス
+
+[MIT License](./LICENSE)
