@@ -34,6 +34,21 @@ export const STORAGE_KEY = 'c4-model-whiteboard-viewer:source';
 export const STORAGE_VERSION = 1;
 
 /**
+ * ドキュメントタイトル(ツールバーのタイトル入力欄)のlocalStorage永続化キー。
+ * `STORAGE_KEY`(ソース本文、バージョン付き封筒形式)とは意図的に完全に独立したキー・
+ * 素の文字列形式にする。タイトルを`STORAGE_KEY`のペイロードに同居させると、封筒の形が変わって
+ * `STORAGE_VERSION`を上げる必要が生じ、`loadPersistedSource`の「バージョン不一致は破損と同列に
+ * 扱いnullを返す」ロジックにより、タイトル機能を追加しただけで既存ユーザーの保存済みソースが
+ * 一律で読めなくなってしまう(サイレントにデータが消えたのと同義)。この副作用を避けるため、
+ * タイトルは別キー・別形式(バージョン封筒なし。値は「非空文字列かどうか」以外に壊れ得る
+ * 「形」が無いため、封筒機構は過剰)で読み書きする(`ui/title.ts`参照)。
+ */
+export const STORAGE_TITLE_KEY = 'c4-model-whiteboard-viewer:title';
+
+/** タイトル未設定時の既定表示(`ui/title.ts`・`main.ts`共通)。 */
+export const DEFAULT_TITLE = 'Untitled';
+
+/**
  * スプリッター(`ui/splitter.ts`)がエディタ列(editor-pane+issues-panel)の幅をドラッグで
  * 変更する際のクランプ値・既定値。出典: docs/01_要件定義書.md §4「エディタとビューワーの境界は
  * ドラッグでリサイズ可能」。狭すぎ/広すぎを防ぐための上下限のみ定義し、厳密な操作性の作り込みは

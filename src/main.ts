@@ -5,6 +5,7 @@ import {
   type LevelController,
   type LevelData,
 } from './camera/levelController';
+import { DEFAULT_TITLE } from './constants';
 import { mountExcalidraw, type ExcalidrawHost } from './excal/host';
 import { layout } from './layout/layout';
 import { buildModel } from './model/build';
@@ -20,8 +21,15 @@ import {
   type EditorController,
 } from './ui/editor';
 import { exportCurrentLevelPng, exportCurrentLevelSvg } from './ui/exporter';
+import { readFileAsText, saveSourceAsFile, stripFileExtension } from './ui/fileIO';
 import { createIssuesPanel, type IssuesPanelController } from './ui/issuesPanel';
 import { createSplitter } from './ui/splitter';
+import {
+  createTitleField,
+  loadPersistedTitle,
+  savePersistedTitle,
+  type TitleController,
+} from './ui/title';
 
 const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4];
 /** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
@@ -44,6 +52,8 @@ async function bootstrap(): Promise<void> {
   if (editorContainer === null) throw new Error('#editor-mount が見つかりません。');
   const issuesMount = document.getElementById('issues-panel-mount');
   if (issuesMount === null) throw new Error('#issues-panel-mount が見つかりません。');
+  const titleInput = document.getElementById('title-input');
+  if (!(titleInput instanceof HTMLInputElement)) throw new Error('#title-input が見つかりません。');
 
   // FR-1.4: 起動時にlocalStorageからの復元を試みる。無い/壊れている場合は初期サンプルへ
   // 静かにフォールバックする(loadPersistedSourceがその判定を内包する。ui/editor.ts参照)。
@@ -52,6 +62,12 @@ async function bootstrap(): Promise<void> {
   const issuesPanel = createIssuesPanel(issuesMount, (line) => {
     editor.jumpToLine(line);
   });
+
+  // タイトルも同じ「無い/壊れている場合は既定値へフォールバック」パターン(loadPersistedTitle
+  // が判定を内包する。ui/title.ts参照)。ソース本文とは独立したキーで永続化する(constants.ts参照)。
+  const initialTitle = loadPersistedTitle(window.localStorage) ?? DEFAULT_TITLE;
+  const titleField = createTitleField(titleInput, initialTitle);
+  setupTitlePersistence(titleField);
 
   const { model, issues } = buildModel(editor.getValue());
   issuesPanel.update(issues);
@@ -75,9 +91,10 @@ async function bootstrap(): Promise<void> {
     levelData = newLevelData;
   });
   setupPersistence(editor);
-  setupSampleMenu(editor);
+  setupSampleMenu(editor, titleField);
   setupSplitter();
   setupExporter(host, levelController, () => levelData);
+  setupFileIO(editor, titleField);
 }
 
 /**
@@ -128,8 +145,23 @@ function setupPersistence(editor: EditorController): void {
 }
 
 /**
+ * ドキュメントタイトルのlocalStorage自動保存。`titleField.subscribe`は登録直後に現在値で
+ * 1回呼ばれ(camera.ts/levelControllerと同じ規約)、以後は値が変わるたび(ユーザーの手入力
+ * change/blur、またはサンプル読込・ファイル読込による`setTitle`呼び出し)に呼ばれる。
+ * `setupPersistence`(ソース本文)と同じ「subscribeへ保存処理を1つ足すだけ」のパターン。
+ */
+function setupTitlePersistence(titleField: TitleController): void {
+  titleField.subscribe((title) => {
+    savePersistedTitle(window.localStorage, title);
+  });
+}
+
+/**
  * T4-2: サンプル読込メニュー(FR-1.5)。選択時、現ソースを破棄する旨を`confirm()`で確認してから
  * `editor.setValue`で差し替える。キャンセル時は何もしない。
+ * post-v1.0で追加: 読込と同時にタイトルをそのサンプルの表示ラベル(例:「ECサイト」)に
+ * 差し替える(「今どのモデルを見ているか」をタイトルに反映させ、サンプル切替後に古いタイトルが
+ * 残り続けるのを防ぐ)。
  *
  * 実装判断(申し送り): 確認ダイアログはブラウザ標準の`window.confirm`を採用した。本アプリは
  * UIフレームワーク・状態管理ライブラリを導入しない方針(CLAUDE.md)であり、独自モーダルを
@@ -140,7 +172,7 @@ function setupPersistence(editor: EditorController): void {
  * `<select>`は選択のたびに空(プレースホルダ)へ戻す。そうしないと同じサンプルを続けて
  * 選び直した場合に値が変化せず`change`イベントが発火しない(再読込したいケースを阻害する)。
  */
-function setupSampleMenu(editor: EditorController): void {
+function setupSampleMenu(editor: EditorController, titleField: TitleController): void {
   const select = document.getElementById('sample-select');
   if (!(select instanceof HTMLSelectElement)) return;
 
@@ -156,6 +188,55 @@ function setupSampleMenu(editor: EditorController): void {
     if (!discard) return;
 
     editor.setValue(chosen.source);
+    titleField.setTitle(chosen.label);
+  });
+}
+
+/**
+ * post-v1.0で追加: ソーステキストのファイル保存/読込。
+ * 保存: 現在のタイトル(`sanitizeFilename`で禁止文字除去)を`.txt`ファイル名にしてダウンロードする
+ * (`ui/fileIO.ts`の`saveSourceAsFile`)。
+ * 読込: 「開く」ボタンで隠し`<input type="file">`をクリックさせ、選択された`.txt`ファイルを
+ * `FileReader`で読む。サンプル読込(`setupSampleMenu`)と同じ「現在のソースを破棄してよいか」の
+ * `confirm()`確認を経てから`editor.setValue`し、タイトルも読み込んだファイル名(拡張子除く)に
+ * 差し替える。`<input type="file">`は選択のたびに`value = ''`へ戻す(同じファイルを連続で
+ * 選び直しても`change`イベントが発火するようにするため。`<select>`側で既に解決済みの
+ * 同種の問題と同じ対処。このファイル冒頭のsetupSampleMenuの申し送り参照)。
+ */
+function setupFileIO(editor: EditorController, titleField: TitleController): void {
+  const saveButton = document.getElementById('save-file-button');
+  const openButton = document.getElementById('open-file-button');
+  const fileInput = document.getElementById('file-input');
+  if (!(fileInput instanceof HTMLInputElement)) return;
+
+  saveButton?.addEventListener('click', () => {
+    saveSourceAsFile(editor.getValue(), titleField.getTitle());
+  });
+
+  openButton?.addEventListener('click', () => {
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = '';
+    if (file === undefined) return;
+
+    const discard = window.confirm(
+      `現在のソースを破棄してファイル「${file.name}」を読み込みます。よろしいですか?`,
+    );
+    if (!discard) return;
+
+    void readFileAsText(file)
+      .then((text) => {
+        editor.setValue(text);
+        titleField.setTitle(stripFileExtension(file.name));
+      })
+      .catch(() => {
+        // ファイル読込はユーザー環境(ディスク)依存の境界のため、失敗時は通知のみでアプリを止めない
+        // (実装指示書§4「防御的コードは境界のみ」。confirm()と対称に window.alert を使う)。
+        window.alert('ファイルの読込に失敗しました。');
+      });
   });
 }
 

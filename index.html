@@ -9,6 +9,14 @@
   <body>
     <div id="app">
       <header id="toolbar">
+        <span id="title-controls">
+          <input
+            id="title-input"
+            type="text"
+            aria-label="ドキュメントタイトル"
+            placeholder="Untitled"
+          />
+        </span>
         <span>
           サンプル:
           <select id="sample-select">
@@ -16,6 +24,12 @@
             <option value="internet-banking">インターネットバンキング</option>
             <option value="ec-site">ECサイト</option>
           </select>
+        </span>
+        <span id="file-controls">
+          ファイル:
+          <button id="save-file-button" type="button">保存</button>
+          <button id="open-file-button" type="button">開く</button>
+          <input id="file-input" type="file" accept=".txt,text/plain" hidden />
         </span>
         <span id="level-controls">
           レベル:

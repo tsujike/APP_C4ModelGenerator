@@ -40,6 +40,15 @@ body {
   margin-right: 8px;
 }
 
+/* ドキュメントタイトル入力欄(post-v1.0)。ツールバー先頭に置き「今何を見ているか」を
+   他のコントロール(サンプル選択・レベル操作等)より先に読めるようにする。 */
+#title-input {
+  font-size: 14px;
+  font-weight: bold;
+  padding: 4px 6px;
+  width: 200px;
+}
+
 #editor-pane {
   grid-area: editor;
   border-right: 1px solid #ccc;

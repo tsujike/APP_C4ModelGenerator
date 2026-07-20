@@ -2,3 +2,5 @@ dist
 node_modules
 docs
 spike-t2-0b
+# 外部配布用の単一HTMLファイル(base64埋め込み画像を含む生成物)。手編集・Prettier整形の対象外。
+flyer.html

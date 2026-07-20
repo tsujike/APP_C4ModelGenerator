@@ -19,7 +19,8 @@
  * `ui/exporter.ts`を素のDOM操作(ダウンロードトリガー)に専念させる。
  *
  * ダウンロードのトリガー(Blob→ObjectURL→<a>クリック)はDOM操作だが、`ui/`配下でのDOM操作は
- * 実装指示書§4で許可されている(issuesPanel.ts/splitter.tsと同じ扱い)。
+ * 実装指示書§4で許可されている(issuesPanel.ts/splitter.tsと同じ扱い)。実体は`ui/download.ts`の
+ * `downloadBlob`に切り出し、ソーステキスト保存(`ui/fileIO.ts`)と共有する。
  *
  * 「対象は現レベルの全要素」(実装指示書T5-1「やること」): 呼び出し側(main.ts)が
  * `levelController`の現在レベルに対応する `LevelData.elements`
@@ -31,6 +32,7 @@
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
 import type { ExcalidrawHost } from '../excal/host';
 import type { Level } from '../model/types';
+import { downloadBlob } from './download';
 
 /**
  * ダウンロードファイル名を決める純関数(テスト可能)。表示レベルをファイル名に含め、
@@ -38,21 +40,6 @@ import type { Level } from '../model/types';
  */
 export function exportFileName(level: Level, extension: 'svg' | 'png'): string {
   return `c4-model-L${String(level)}.${extension}`;
-}
-
-/** Blobをダウンロードさせる標準的なブラウザパターン(`<a download>` + ObjectURL)。 */
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
 }
 
 /**
