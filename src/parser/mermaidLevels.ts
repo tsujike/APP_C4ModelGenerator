@@ -54,6 +54,86 @@ export function isMermaidModeSource(source: string): boolean {
 }
 
 /**
+ * Mermaidの図種を表す先頭キーワード(`detectMarkerlessMermaidLine`専用)。
+ *
+ * **`classDiagram` は意図的に含めない**。本アプリのC4モードでは `classDiagram` ブロックが
+ * L4(コードレベル)の正規の入力だからで(`parser/types.ts` の `BlockKind` 参照)、これを
+ * 含めると「C4モードで classDiagram だけ書いて C4Context を書き忘れた」ケースに対して
+ * 「Mermaidモードにしては?」という的外れな案内を出してしまう。
+ *
+ * それ以外はMermaid 11系の図種を素直に列挙しただけで、網羅性は必須ではない。この一覧は
+ * 描画の可否には一切関与せず、**案内メッセージを出すかどうかだけ**を決める。載っていない図種は
+ * 案内が出ないだけで、マーカーさえ書けば従来どおり描画される(取りこぼしても実害は小さい)。
+ */
+const MERMAID_DIAGRAM_KEYWORDS: readonly string[] = [
+  'flowchart',
+  'graph',
+  'sequenceDiagram',
+  'stateDiagram',
+  'stateDiagram-v2',
+  'erDiagram',
+  'journey',
+  'gantt',
+  'pie',
+  'quadrantChart',
+  'requirementDiagram',
+  'gitGraph',
+  'mindmap',
+  'timeline',
+  'zenuml',
+  'sankey-beta',
+  'xychart-beta',
+  'block-beta',
+  'packet-beta',
+  'kanban',
+  'architecture-beta',
+  'radar-beta',
+  'treemap-beta',
+];
+
+/**
+ * 行頭がMermaidの図種キーワードか判定する。キーワードの直後は「行末・空白・`:`」のいずれかで
+ * なければならない(`flowchart TD` / `sequenceDiagram` / `gitGraph:` を通し、`graphql...` のような
+ * 別語を弾く)。大文字小文字は区別しない(案内を出すか否かの判定なので寛容側に倒す)。
+ */
+function startsWithMermaidKeyword(text: string): boolean {
+  const lower = text.toLowerCase();
+  return MERMAID_DIAGRAM_KEYWORDS.some((keyword) => {
+    const lowerKeyword = keyword.toLowerCase();
+    if (!lower.startsWith(lowerKeyword)) return false;
+    const next = lower.charAt(lowerKeyword.length);
+    return next === '' || next === ' ' || next === '\t' || next === ':';
+  });
+}
+
+/**
+ * 「Mermaidの図に見えるのにレベルマーカーが1つも無い」ソースを検出し、図種行の行番号(1始まり)を返す。
+ * 該当しなければ `undefined`。
+ *
+ * 追加の経緯(Kennyの指摘): 素のMermaid(`sequenceDiagram` から始まるテキスト)をそのまま貼ると
+ * マーカーが無いためC4モードと判定され、「C4Contextブロックが見つかりません」というC4モードの
+ * エラーだけが出る。仕様どおりの挙動ではあるが、原因(マーカーの書き忘れ)にたどり着けない。
+ * そこで「マーカーがありません」と案内するための検出をここに置く。
+ *
+ * 判定は先頭の有効行(空行と `%%` コメント行を読み飛ばした最初の行)1行だけを見る。以降の行まで
+ * 見に行かないのは、C4モードの正しいソースの途中に現れる語を拾って誤検出するのを避けるため。
+ *
+ * この関数は検出だけを行い、issueの生成は呼び出し側(`main.ts`)の責務とする
+ * (`parser/`はDOM非依存の純関数、かつ`model/build.ts`のC4解析経路は不変に保つ方針のため)。
+ */
+export function detectMarkerlessMermaidLine(source: string): number | undefined {
+  if (isMermaidModeSource(source)) return undefined;
+
+  const rawLines = source.split(/\r\n|\r|\n/);
+  for (let i = 0; i < rawLines.length; i++) {
+    const text = (rawLines[i] ?? '').trim();
+    if (text === '' || text.startsWith('%%')) continue;
+    return startsWithMermaidKeyword(text) ? i + 1 : undefined;
+  }
+  return undefined;
+}
+
+/**
  * `%%L1`〜`%%L4` マーカーでソースを最大4つのMermaidソースへ分割する。
  *
  * - 最初のマーカーより前に書かれた非空行は warning にして無視する(どのレベルにも属さないため)。

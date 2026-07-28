@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isMermaidModeSource, splitMermaidLevels } from '../../src/parser/mermaidLevels';
+import {
+  detectMarkerlessMermaidLine,
+  isMermaidModeSource,
+  splitMermaidLevels,
+} from '../../src/parser/mermaidLevels';
 import { mermaidLevelsSample } from '../../src/samples/mermaid-levels';
 
 describe('isMermaidModeSource', () => {
@@ -163,5 +167,83 @@ describe('splitMermaidLevels', () => {
     expect(levels.get(2)?.text).toContain('subgraph');
     expect(levels.get(3)?.text.startsWith('sequenceDiagram')).toBe(true);
     expect(levels.has(4)).toBe(false);
+  });
+});
+
+describe('detectMarkerlessMermaidLine', () => {
+  it('detects a bare sequenceDiagram pasted without any level marker', () => {
+    // Kennyが実際に貼ったのと同じ形(素のMermaidをそのまま貼るとC4モードと判定される)。
+    const source = [
+      'sequenceDiagram',
+      '    autonumber',
+      '    actor User as 利用者',
+      '    User->>Counter: 借りたい本と利用カードを提示',
+    ].join('\n');
+
+    expect(detectMarkerlessMermaidLine(source)).toBe(1);
+  });
+
+  it('reports the line number of the first significant line, skipping blanks and comments', () => {
+    const source = ['', '  ', '%% これはコメント', '', 'flowchart TD', '  A --> B'].join('\n');
+
+    expect(detectMarkerlessMermaidLine(source)).toBe(5);
+  });
+
+  it('detects the common mermaid diagram keywords', () => {
+    for (const head of [
+      'flowchart TD',
+      'graph LR',
+      'sequenceDiagram',
+      'stateDiagram-v2',
+      'erDiagram',
+      'gantt',
+      'pie title 内訳',
+      'mindmap',
+      'timeline',
+      'gitGraph:',
+    ]) {
+      expect(detectMarkerlessMermaidLine(`${head}\n  A --> B`)).toBe(1);
+    }
+  });
+
+  it('is tolerant of casing', () => {
+    expect(detectMarkerlessMermaidLine('FlowChart TD\n  A --> B')).toBe(1);
+  });
+
+  it('returns undefined when a level marker exists (already in mermaid mode)', () => {
+    expect(detectMarkerlessMermaidLine('%%L2\nsequenceDiagram\n  A->>B: x')).toBeUndefined();
+  });
+
+  it('returns undefined for the built-in mermaid sample', () => {
+    expect(detectMarkerlessMermaidLine(mermaidLevelsSample)).toBeUndefined();
+  });
+
+  it('returns undefined for a C4 source', () => {
+    const source = ['C4Context', '  Person(a, "A")', '  System(b, "B")'].join('\n');
+    expect(detectMarkerlessMermaidLine(source)).toBeUndefined();
+  });
+
+  it('returns undefined for a classDiagram-only source (a valid C4 mode block kind)', () => {
+    // `classDiagram` はC4モードのL4入力そのものなので、Mermaidモードの案内を出してはいけない。
+    const source = ['classDiagram', '  class Order {', '    +id: string', '  }'].join('\n');
+    expect(detectMarkerlessMermaidLine(source)).toBeUndefined();
+  });
+
+  it('returns undefined for a C4Container-only source', () => {
+    const source = ['C4Container', '  Container(web, "Web", "TS")'].join('\n');
+    expect(detectMarkerlessMermaidLine(source)).toBeUndefined();
+  });
+
+  it('does not match a word that merely starts with a keyword', () => {
+    expect(detectMarkerlessMermaidLine('graphql schema {\n  a: B\n}')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty or blank source', () => {
+    expect(detectMarkerlessMermaidLine('')).toBeUndefined();
+    expect(detectMarkerlessMermaidLine('\n\n   \n')).toBeUndefined();
+  });
+
+  it('handles CRLF sources', () => {
+    expect(detectMarkerlessMermaidLine('\r\nsequenceDiagram\r\n  A->>B: x')).toBe(2);
   });
 });

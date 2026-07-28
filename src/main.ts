@@ -12,7 +12,11 @@ import { layout } from './layout/layout';
 import { buildModel } from './model/build';
 import { project } from './model/project';
 import type { C4Model, Level } from './model/types';
-import { isMermaidModeSource, splitMermaidLevels } from './parser/mermaidLevels';
+import {
+  detectMarkerlessMermaidLine,
+  isMermaidModeSource,
+  splitMermaidLevels,
+} from './parser/mermaidLevels';
 import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
 import { ecSiteSample } from './samples/ec-site';
@@ -319,6 +323,21 @@ async function buildFromSource(source: string): Promise<BuildResult> {
     return buildMermaidLevelData(source);
   }
   const { model, issues } = buildModel(source);
+
+  // 素のMermaidをそのまま貼った場合(マーカー行が無いのでC4モードと判定される)の救済。
+  // C4モード側は「C4Contextブロックが見つかりません」としか言えず、原因(マーカーの書き忘れ)に
+  // たどり着けないため、ここで案内を1件足す(Kennyの指摘に対する対応)。
+  // C4モードの解析そのもの(model/build.ts)は変更しない。あくまでissuesへの追記だけに留める。
+  const markerlessLine = detectMarkerlessMermaidLine(source);
+  if (markerlessLine !== undefined) {
+    issues.push({
+      severity: 'error',
+      line: markerlessLine,
+      message:
+        'Mermaidの図のようですが、レベルマーカーがありません。図の先頭に %%L1 (〜%%L4)の行を追加すると、そのレベルにこの図を表示します。',
+    });
+  }
+
   return { model, issues, levelData: await buildLevelData(model) };
 }
 
