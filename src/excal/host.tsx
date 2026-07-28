@@ -18,7 +18,7 @@ import {
 } from '@excalidraw/excalidraw';
 import '@excalidraw/excalidraw/index.css';
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
+import type { BinaryFiles, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { createRoot, type Root } from 'react-dom/client';
 import { EXPORT } from '../constants';
 
@@ -38,7 +38,12 @@ import { EXPORT } from '../constants';
 interface ExportOpts {
   elements: ReturnType<typeof convertToExcalidrawElements>;
   appState: { exportBackground: boolean; viewBackgroundColor: string };
-  files: null;
+  /**
+   * 実際のExcalidrawの宣言は `BinaryFiles | null`。C4モードでは常にnullだが、Mermaidモードの
+   * 画像フォールバック(`excal/mermaid.ts`)ではimage要素が`fileId`で参照するバイナリを
+   * ここに渡さないと、書き出したSVG/PNGから図が丸ごと欠ける。
+   */
+  files: BinaryFiles | null;
 }
 const typedExportToSvg = exportToSvg as (opts: ExportOpts) => Promise<SVGSVGElement>;
 const typedExportToBlob = exportToBlob as (
@@ -85,7 +90,7 @@ export interface ExcalidrawHost {
    * T3-2で拡張する想定)。ExcalidrawAPIがまだ初期化されていない(マウント直後で
    * `excalidrawAPI` コールバック未発火)場合は何もしない。
    */
-  updateElements(elements: readonly ExcalidrawElementSkeleton[]): void;
+  updateElements(elements: readonly ExcalidrawElementSkeleton[], files?: BinaryFiles): void;
   /** Reactルートを破棄する(テスト・ページ遷移時の後始末用)。 */
   unmount(): void;
   /**
@@ -130,6 +135,7 @@ export interface ExcalidrawHost {
   applyLevelSwitch(
     elements: readonly ExcalidrawElementSkeleton[],
     scroll?: { scrollX: number; scrollY: number },
+    files?: BinaryFiles,
   ): void;
   /**
    * T5-1(FR-6.1、受入基準5): `elements`(呼び出し側が渡す、対象レベルの全要素)をSVG文字列として
@@ -141,13 +147,29 @@ export interface ExcalidrawHost {
    * `exportToSvg`が返す`SVGSVGElement`はDOMに未接続のため、`XMLSerializer`で文字列化してから返す
    * (実際のダウンロードトリガーは`ui/exporter.ts`の責務)。
    */
-  exportSvgString(elements: readonly ExcalidrawElementSkeleton[]): Promise<string>;
+  exportSvgString(
+    elements: readonly ExcalidrawElementSkeleton[],
+    files?: BinaryFiles,
+  ): Promise<string>;
   /** T5-1(FR-6.2): `elements`をPNG(`EXPORT.pngScale`倍解像度)のBlobとして書き出す。 */
-  exportPngBlob(elements: readonly ExcalidrawElementSkeleton[]): Promise<Blob>;
+  exportPngBlob(elements: readonly ExcalidrawElementSkeleton[], files?: BinaryFiles): Promise<Blob>;
 }
 
 interface ApiBox {
   current: ExcalidrawImperativeAPI | null;
+}
+
+/**
+ * Mermaidモード(post-v1.0)の画像フォールバック対応: image要素は `fileId` でバイナリを参照する
+ * だけなので、要素を渡す前にそのバイナリをExcalidrawのファイルストアへ登録しておく必要がある
+ * (登録が無いと画像が「読込中」のまま表示されない)。`addFiles`は同じidの再登録に対して冪等で、
+ * レベルを行き来するたびに呼ばれても問題ない。C4モードでは`files`がundefinedなので何もしない。
+ */
+function registerFiles(api: ExcalidrawImperativeAPI, files: BinaryFiles | undefined): void {
+  if (files === undefined) return;
+  const values = Object.values(files);
+  if (values.length === 0) return;
+  api.addFiles(values);
 }
 
 function toCameraSnapshot(appState: {
@@ -176,6 +198,7 @@ function toViewportSnapshot(appState: {
 
 function HostApp(props: {
   initialElements: readonly ExcalidrawElementSkeleton[];
+  initialFiles: BinaryFiles | undefined;
   apiBox: ApiBox;
   onApiReady: () => void;
   onSceneChange: (camera: ExcalidrawCameraSnapshot, viewport: ViewportSnapshot) => void;
@@ -200,6 +223,9 @@ function HostApp(props: {
       initialData={{
         elements: convertToExcalidrawElements([...props.initialElements]),
         appState: { viewModeEnabled: true },
+        // Mermaidモードの画像フォールバック時のみ非undefined(registerFilesのコメント参照)。
+        // `exactOptionalPropertyTypes`のため、undefinedの場合はキー自体を渡さない。
+        ...(props.initialFiles !== undefined ? { files: props.initialFiles } : {}),
       }}
     />
   );
@@ -212,6 +238,7 @@ function HostApp(props: {
 export function mountExcalidraw(
   container: HTMLElement,
   initialElements: readonly ExcalidrawElementSkeleton[],
+  initialFiles?: BinaryFiles,
 ): ExcalidrawHost {
   const apiBox: ApiBox = { current: null };
   const readyQueue: Array<(api: ExcalidrawImperativeAPI) => void> = [];
@@ -245,6 +272,7 @@ export function mountExcalidraw(
   root.render(
     <HostApp
       initialElements={initialElements}
+      initialFiles={initialFiles}
       apiBox={apiBox}
       onApiReady={() => {
         tryFlushReadyQueue();
@@ -264,9 +292,10 @@ export function mountExcalidraw(
   );
 
   return {
-    updateElements(elements) {
+    updateElements(elements, files) {
       const api = apiBox.current;
       if (api === null) return;
+      registerFiles(api, files);
       api.updateScene({ elements: convertToExcalidrawElements([...elements]) });
     },
     unmount() {
@@ -280,6 +309,12 @@ export function mountExcalidraw(
     },
     fitToContent(onApplied) {
       runWhenSceneReady((api) => {
+        // 空シーンでのFitは何もしない(Mermaidモードの未登録レベル対策。実測: 要素ゼロの
+        // シーンで`scrollToContent`を呼ぶと、合わせる対象のバウンディングボックスが無いため
+        // ズームが上限へ張り付く[3000%]。そのままAUTOに戻すとL4に貼り付いて戻れなくなる)。
+        // 合わせる対象が無い以上カメラを動かす意味は無いので、`onApplied`も呼ばずに現状維持する
+        // (呼び出し側のz0較正も現在値のまま。C4モードは常に要素があるため影響しない)。
+        if (api.getSceneElements().length === 0) return;
         if (onApplied !== undefined) {
           // このscrollToContent呼び出し自身がもたらす直後のonChangeだけを1回だけ拾う
           // (subscribeCameraの永続リスナーとは別系統。api.onChangeは1回発火ごとに手動で
@@ -299,9 +334,10 @@ export function mountExcalidraw(
       // screen中心=(width/2, height/2) を world = screen/zoom - scroll で変換する。
       return { x: width / 2 / zoom - scrollX, y: height / 2 / zoom - scrollY };
     },
-    applyLevelSwitch(elements, scroll) {
+    applyLevelSwitch(elements, scroll, files) {
       const api = apiBox.current;
       if (api === null) return;
+      registerFiles(api, files);
       const converted = convertToExcalidrawElements([...elements]);
       if (scroll === undefined) {
         api.updateScene({ elements: converted });
@@ -312,16 +348,19 @@ export function mountExcalidraw(
         });
       }
     },
-    async exportSvgString(elements) {
+    async exportSvgString(elements, files) {
       const converted = convertToExcalidrawElements([...elements]);
       const svg = await typedExportToSvg({
         elements: converted,
         appState: { exportBackground: true, viewBackgroundColor: EXPORT.backgroundColor },
-        files: null,
+        // Mermaidモードの画像フォールバック(`excal/mermaid.ts`)ではimage要素が`fileId`で
+        // バイナリを参照するだけなので、ここにfilesを渡さないと書き出したSVG/PNGから画像が
+        // 丸ごと欠ける。C4モードでは常にundefined→null(従来どおり)。
+        files: files ?? null,
       });
       return new XMLSerializer().serializeToString(svg);
     },
-    async exportPngBlob(elements) {
+    async exportPngBlob(elements, files) {
       const converted = convertToExcalidrawElements([...elements]);
       // 実機確認による申し送り: 公開APIの`exportToBlob`(内部実装 `../utils/export.ts` の
       // `exportToCanvas2`)は`appState.exportScale`を単独では無視する
@@ -332,7 +371,7 @@ export function mountExcalidraw(
       return typedExportToBlob({
         elements: converted,
         appState: { exportBackground: true, viewBackgroundColor: EXPORT.backgroundColor },
-        files: null,
+        files: files ?? null,
         mimeType: 'image/png',
         getDimensions: (width, height) => ({
           width: width * EXPORT.pngScale,

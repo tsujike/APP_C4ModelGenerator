@@ -7,13 +7,17 @@ import {
 } from './camera/levelController';
 import { DEFAULT_TITLE } from './constants';
 import { mountExcalidraw, type ExcalidrawHost } from './excal/host';
+import { convertMermaidToElements } from './excal/mermaid';
 import { layout } from './layout/layout';
 import { buildModel } from './model/build';
 import { project } from './model/project';
 import type { C4Model, Level } from './model/types';
+import { isMermaidModeSource, splitMermaidLevels } from './parser/mermaidLevels';
+import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
 import { ecSiteSample } from './samples/ec-site';
 import { internetBankingSample } from './samples/internet-banking';
+import { mermaidLevelsSample } from './samples/mermaid-levels';
 import {
   createEditor,
   loadPersistedSource,
@@ -39,7 +43,11 @@ const INITIAL_LEVEL: Level = 2;
 const SAMPLES: ReadonlyArray<{ id: string; label: string; source: string }> = [
   { id: 'internet-banking', label: 'インターネットバンキング', source: internetBankingSample },
   { id: 'ec-site', label: 'ECサイト', source: ecSiteSample },
+  { id: 'mermaid-levels', label: 'Mermaid(レベル別)', source: mermaidLevelsSample },
 ];
+
+/** C4モードでモデルを持たないMermaidモード用の空モデル(levelController.updateModelの引数用)。 */
+const EMPTY_MODEL: C4Model = { roots: [], byAlias: new Map(), edges: [] };
 
 // サンプル(またはlocalStorageからの復元、FR-1.4)→統一モデル→(全レベル分の)射影→レイアウト→
 // Excalidraw要素、の配線。マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+
@@ -69,23 +77,24 @@ async function bootstrap(): Promise<void> {
   const titleField = createTitleField(titleInput, initialTitle);
   setupTitlePersistence(titleField);
 
-  const { model, issues } = buildModel(editor.getValue());
-  issuesPanel.update(issues);
+  const built = await buildFromSource(editor.getValue());
+  issuesPanel.update(built.issues);
   // T5-1: エクスポートボタンは「クリック時点で表示中のレベルの全要素」を必要とするため、
   // 編集のたびに再構築される最新のlevelDataを常に読めるよう`let`にする(このファイル冒頭の
   // 申し送りどおり、以前は`const`でbootstrap内に閉じていたが、それだと再解析後の最新版を
   // 参照する手段が無かった)。再解析時の差し替えは`setupLiveEditing`に渡す
   // `onLevelDataUpdated`コールバックで行う。
-  let levelData = await buildLevelData(model);
+  let levelData = built.levelData;
 
-  const initialData = levelData.get(INITIAL_LEVEL);
+  const startLevel = pickInitialLevel(levelData);
+  const initialData = levelData.get(startLevel);
   // ALL_LEVELSの全レベルをbuildLevelDataで計算済みのため到達しない分岐。
   if (initialData === undefined)
     throw new Error('unreachable: 初期レベルのlevelDataが見つかりません。');
 
-  const host = mountExcalidraw(excalidrawContainer, initialData.elements);
+  const host = mountExcalidraw(excalidrawContainer, initialData.elements, initialData.files);
   const camera = setupCamera(host);
-  const levelController = createLevelController(host, camera, model, levelData, INITIAL_LEVEL);
+  const levelController = createLevelController(host, camera, built.model, levelData, startLevel);
   setupLevelControls(levelController);
   setupLiveEditing(editor, levelController, issuesPanel, (newLevelData) => {
     levelData = newLevelData;
@@ -124,10 +133,10 @@ async function reparseAndRerender(
   issuesPanel: IssuesPanelController,
   onLevelDataUpdated: (levelData: Map<Level, LevelData>) => void,
 ): Promise<void> {
-  const { model, issues } = buildModel(source);
-  issuesPanel.update(issues);
-  const levelData = await buildLevelData(model);
-  levelController.updateModel(model, levelData);
+  const built = await buildFromSource(source);
+  issuesPanel.update(built.issues);
+  const levelData = built.levelData;
+  levelController.updateModel(built.model, levelData);
   // T5-1: エクスポートボタンが常に最新のlevelDataを読めるよう、bootstrap側の`let levelData`を
   // 差し替える(このコールバックの実体はbootstrap内のクロージャ)。
   onLevelDataUpdated(levelData);
@@ -269,14 +278,14 @@ function setupExporter(
     const data = getLevelData().get(level);
     // levelDataは1〜4全て事前計算済み(buildLevelDataの契約)のため到達しない分岐。
     if (data === undefined) return;
-    void exportCurrentLevelSvg(host, data.elements, level);
+    void exportCurrentLevelSvg(host, data.elements, level, data.files);
   });
 
   pngButton?.addEventListener('click', () => {
     const { level } = levelController.getState();
     const data = getLevelData().get(level);
     if (data === undefined) return;
-    void exportCurrentLevelPng(host, data.elements, level);
+    void exportCurrentLevelPng(host, data.elements, level, data.files);
   });
 }
 
@@ -288,6 +297,94 @@ function setupExporter(
  * 「解析+全レベルレイアウト再計算が1秒以内」が要件であり、起動時一括計算はこの要件そのものと
  * 整合する。テキスト編集によるキャッシュ破棄(T4スコープ)は本タスクの対象外)。
  */
+/** 1回の解析で得られる、画面更新に必要な一式(モード非依存の共通の形)。 */
+interface BuildResult {
+  /** Mermaidモードでは統一モデルを持たないため EMPTY_MODEL。 */
+  model: C4Model;
+  issues: ParseIssue[];
+  levelData: Map<Level, LevelData>;
+}
+
+/**
+ * post-v1.0(Mermaidモード): ソーステキストからモードを判定し、対応する経路で4レベル分の
+ * 表示データを作る。2つのモードは排他(Kenny確認済み: 「Mermaidモードなら4レベル全部Mermaidで
+ * よい」「C4との混在はない」)なので、判定は`isMermaidModeSource`の一箇所だけで済む。
+ *
+ * 設計判断(申し送り): モード分岐をこの1関数に閉じることで、C4モードの経路
+ * (buildModel → project → layout → toExcalidraw)には一切手を入れていない。既存の全テスト・
+ * 全受入基準はC4モードの経路をそのまま検証し続ける。
+ */
+async function buildFromSource(source: string): Promise<BuildResult> {
+  if (isMermaidModeSource(source)) {
+    return buildMermaidLevelData(source);
+  }
+  const { model, issues } = buildModel(source);
+  return { model, issues, levelData: await buildLevelData(model) };
+}
+
+/**
+ * Mermaidモード: `%%L1`〜`%%L4` で登録された各図を Excalidraw要素へ変換する。
+ *
+ * - 未登録レベルは空の`LevelData`(elements: [])にする。Kenny確認済みの「未登録のレベルは
+ *   何も表示しない」の実装であり、同時に「levelDataは1〜4全て揃っている」という
+ *   `camera/levelController.ts`の既存契約も保てる(欠けたキーを許すと切替が無反応になる)。
+ * - Mermaidの文法エラーはそのレベルだけを空にし、issuesパネルにerrorとして出す。他のレベルは
+ *   そのまま表示できる(1つのタイポで4レベル全部が消えるのを避ける)。
+ * - `layout`は付けない(アンカー保存は行わない。`LevelData.layout`のJSDoc参照)。
+ *
+ * 4レベル分の変換は`Promise.all`で並行に走らせる(C4モードの`buildLevelData`と同じ形)。
+ */
+async function buildMermaidLevelData(source: string): Promise<BuildResult> {
+  const { levels, issues } = splitMermaidLevels(source);
+
+  const entries = await Promise.all(
+    ALL_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {
+      const entry = levels.get(level);
+      if (entry === undefined) return [level, { elements: [] }];
+      try {
+        const { elements, files } = await convertMermaidToElements(entry.text);
+        return [level, { elements, ...(files !== undefined ? { files } : {}) }];
+      } catch (error) {
+        issues.push({
+          severity: 'error',
+          line: entry.markerLine,
+          // マーカー表記(`%%L2`)をそのまま使う。issuesPanelは行番号を`L4:`の形で前置するため、
+          // ここで素の`L2`と書くと行番号と紛らわしくなる(mermaidLevels.tsの警告文と表記を揃える)。
+          message: `%%L${String(level)} のMermaidを解析できませんでした: ${toErrorMessage(error)}`,
+        });
+        return [level, { elements: [] }];
+      }
+    }),
+  );
+
+  return { model: EMPTY_MODEL, issues, levelData: new Map(entries) };
+}
+
+/** 外部ライブラリ境界のcatch節(`unknown`)から表示用メッセージを取り出す(実装指示書§4: any禁止)。 */
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/**
+ * 起動時に最初に表示するレベルを決める。
+ *
+ * 通常は`INITIAL_LEVEL`(L2。設計書§8.1「z0はL2 Fit直後のzoomで確定する」)だが、Mermaidモードで
+ * L2が未登録だと画面が空のままFitすることになり、収める対象が無いためz0が不安定になる
+ * (`excal/host.tsx`の`fitToContent`の実測メモと同じ問題)。そのため、L2が空の場合に限り
+ * 「要素を持つ最小のレベル」へフォールバックする。C4モードではL2が空になることは無いため
+ * 従来どおりL2が選ばれ、既存挙動は変わらない。
+ */
+function pickInitialLevel(levelData: ReadonlyMap<Level, LevelData>): Level {
+  const preferred = levelData.get(INITIAL_LEVEL);
+  if (preferred !== undefined && preferred.elements.length > 0) return INITIAL_LEVEL;
+  for (const level of ALL_LEVELS) {
+    const data = levelData.get(level);
+    if (data !== undefined && data.elements.length > 0) return level;
+  }
+  return INITIAL_LEVEL;
+}
+
 async function buildLevelData(model: C4Model): Promise<Map<Level, LevelData>> {
   const entries = await Promise.all(
     ALL_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {

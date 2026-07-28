@@ -30,6 +30,10 @@ npm run lint
 
 - Vite / TypeScript strict / vitest / ESLint+Prettier
 - レイアウト: elkjs、描画キャンバス: Excalidraw(`@excalidraw/excalidraw`。Mermaid.jsに描画させない)
+  - post-v1.0の**Mermaidモード**(FR-7 / 設計書§13)でもこの原則は不変: Mermaidにはレイアウト計算のみをさせ、
+    その結果を `@excalidraw/mermaid-to-excalidraw` でExcalidraw要素へ変換し、描くのは従来どおりExcalidraw。
+    唯一の例外は同ライブラリがネイティブ変換に対応しない図(`subgraph`付き`flowchart`・`classDiagram`)で、
+    この場合のみ1枚のラスタ画像として貼られる(Kenny承認済み。C4モードの描画経路は不変)
 - react/react-dom は Excalidraw のホストとしてのみ同梱し、`src/excal/host.tsx` に閉じる
 - Excalidrawカメラ制御の成立は T2-0b スパイクで最初に検証する。不成立なら実装を止めて指揮者に報告(設計書§12の自作SVG案へ回帰判断)
 - エディタ: CodeMirror 6(Phase 4から。それまでtextarea)

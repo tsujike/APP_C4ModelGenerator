@@ -290,7 +290,7 @@ describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
     const newL2Elements: ExcalidrawElementSkeleton[] = [
       { id: 'edited', type: 'rectangle', x: 0, y: 0, width: 1, height: 1 },
     ];
-    newLevelData.set(2, { layout: levelData.get(2)!.layout, elements: newL2Elements });
+    newLevelData.set(2, { layout: levelData.get(2)!.layout!, elements: newL2Elements });
 
     controller.updateModel(model, newLevelData);
 
@@ -312,7 +312,7 @@ describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
     const newL3Elements: ExcalidrawElementSkeleton[] = [
       { id: 'edited-l3', type: 'rectangle', x: 0, y: 0, width: 1, height: 1 },
     ];
-    newLevelData.set(3, { layout: levelData.get(3)!.layout, elements: newL3Elements });
+    newLevelData.set(3, { layout: levelData.get(3)!.layout!, elements: newL3Elements });
     controller.updateModel(model, newLevelData);
 
     controller.lockTo(3);

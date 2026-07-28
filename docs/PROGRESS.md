@@ -627,3 +627,63 @@
      `_to_delete/`に残したまま=無害)でクリーンアップコミットを別途作成する
      (このPROGRESS.md自体の変更とは別コミットとする。理由: 「1タスク=1コミット」の
      慣習に倣い、性能対策とリポジトリ衛生の2つの別関心事を1コミットに混ぜないため)。
+
+- (2026-07-28) **post-v1.0の機能追加「Mermaidモード」(FR-7 / 設計書§13)。** タスク分解(T0-1〜T5-2)の
+  完了後、指揮者=Kennyさんからの追加要望「Mermaid記法も対応したい。レベルによって、登録したMermaidに
+  表示が変わるだけでOK。C4モデルとの連携は不要」に対応した。仕様は事前に3点確認済み:
+  (1) `%%L1`〜`%%L4` のマーカー方式でよい → 承認、(2) C4とMermaidの**混在は許さない**(Mermaidモードなら
+  4レベル全部Mermaid)→ 承認、(3) 未登録レベルは何も表示しない → 承認。
+
+  - **実現可能性の裏取り(実装前)**: 推測で「できます」と答えず3方向で確認した。
+    ① 依存関係: `@excalidraw/mermaid-to-excalidraw@2.2.2` は `@excalidraw/excalidraw@0.18.1` が既に
+    直接依存しており、依存ツリーは増えない(ただし当該パッケージの`exports`から再エクスポートされて
+    いないため`package.json`への明示宣言は必要 → `npm install --save-exact`で追加済み。**そちらの環境では
+    `npm install` の実行が必要**)。② 型: `parseMermaidToExcalidraw` の戻り値 `elements` は
+    `ExcalidrawElementSkeleton[]` で、`render/toExcalidraw.ts` の出力=`LevelData.elements` と同一型。
+    ③ 実挙動: 使い捨てのスパイクページ(`spike-mermaid/`、確認後削除済み)を立てて実ブラウザで4種類の図を
+    変換させ、下記の表の挙動を実測した。
+  - **設計**: 既存パイプライン(`parser → model → layout → render`)には一切手を入れず、`main.ts` の
+    `buildFromSource` 1箇所で `isMermaidModeSource(source)` により経路ごと分岐する。両経路の出力は
+    同じ `Map<Level, LevelData>` に収束するため、レベル切替機構(LevelController)はそのまま再利用できる。
+    C4モードのコードパスは無変更(既存テスト225件が全て無修正で通過することで担保)。
+  - **新規ファイル**: `src/parser/mermaidLevels.ts`(マーカー分割の純関数。DOM非依存)・
+    `src/excal/mermaid.ts`(変換ラッパ。Mermaidは一時DOMを作るためブラウザ専用依存として`excal/`に閉じる。
+    node環境のvitestがmermaid本体を読み込まないようにするため)・`src/samples/mermaid-levels.ts`
+    (組込サンプル3。**L4を意図的に未登録**にして「未登録レベルは空表示」を通常操作で確認できるようにした)・
+    `tests/parser/mermaidLevels.test.ts`(18件)。
+  - **既存ファイルへの変更(最小)**:
+    - `LevelData.layout` を必須→任意にした。Mermaidモードは統一モデルを持たず対応ノード表(`model.byAlias`)を
+      作れないため、§8.3のアンカー保存は原理的に成立しない。`applySwitchElements` は切替前後の両方に
+      `layout` がある時だけアンカー補正を行い、無い場合は要素だけ差し替える(カメラは据え置き。
+      Excalidrawのおまかせ再配置より「見ている位置が飛ばない」方が体験として近いと判断。申し送り)。
+    - `LevelData.files`(`BinaryFiles`)を追加し、`ExcalidrawHost.updateElements`/`applyLevelSwitch`/
+      `mountExcalidraw` が受け取るようにした。画像フォールバック時のimage要素は`fileId`で参照するだけなので、
+      `api.addFiles()` を呼ばないと**何も表示されない**(実装前に気付けた落とし穴)。
+    - `main.ts` に `pickInitialLevel` を追加。Mermaidモードでは既定初期レベル(L2)が空になり得るため、
+      要素を持つ最初のレベルから開始する。
+    - `excal/host.tsx` の `fitToContent` に空シーンガードを追加。実測で、要素ゼロのシーンに対して
+      `scrollToContent` を呼ぶとズームが上限(3000%)へ張り付き、その状態でAUTOに戻すとL4に貼り付いて
+      戻れなくなることが分かったため(未登録レベルでFitを押すと踏む)。C4モードは常に要素があるため影響なし。
+  - **変換の実測結果**(@excalidraw/mermaid-to-excalidraw@2.2.2 + mermaid@11):
+    `flowchart`(subgraph無し)・`sequenceDiagram` → ネイティブ要素へ変換。
+    `flowchart`(subgraph有り)・`classDiagram` → image要素1個+filesへフォールバック
+    (ライブラリが`SubGraph element not found`をconsoleに出す)。**これはライブラリ側の制約で本アプリでは
+    回避できない**ため、FR-7.7で許容と明記し、CLAUDE.md「Mermaid.jsに描画させない」の唯一の例外として
+    記録した(Mermaidにさせているのはレイアウト計算のみで、描くのは従来どおりExcalidraw、という原則自体は不変)。
+  - **検証**: `npm test`(24 files / 225 tests 緑)・`tsc --noEmit`・`lint`・`build` すべて成功。加えて
+    Playwrightの実ブラウザで組込サンプル3を読み込み、L1(ネイティブ変換のflowchart)・L2(subgraphの
+    画像フォールバックが**実際に表示されること**)・L3(sequenceDiagram)・L4(空表示)を目視確認。
+    Mermaid文法エラーを仕込んだソースでも、該当レベルだけが空表示になりIssuesパネルにマーカー行を指す
+    エラーが出て、他レベルの表示は継続することを確認。C4モード(組込サンプル1)のL1〜L4も従来どおりで
+    あることを併せて確認した。
+  - **検証中に見つけて直した件(エクスポート)**: `excal/host.tsx` の `exportSvgString`/`exportPngBlob` は
+    `files: null` をハードコードしていた(v1.0時点ではC4モードしか無くfilesが常に不要だったため)。
+    このままではMermaidモードの画像フォールバック時に、書き出したSVG/PNGから図が丸ごと欠ける。
+    `ExcalidrawHost`の両メソッド・`ui/exporter.ts`・`main.ts`の呼び出しに`files`を通すよう修正し、
+    実ブラウザで実際にダウンロードして確認した(L1[ネイティブ変換]=従来どおり、
+    L2[画像フォールバック]=SVGに`<image ... base64>`が含まれ、PNGも図が正しく描かれている)。
+    受入基準5「エクスポートの内容が画面表示と一致する」はMermaidモードでも満たしている。
+  - **未対応・申し送り**: Mermaidモードでは要素の意味的な対応付けが無いため、レベル切替時の
+    アンカー保存(FR-5.4)は行わない(仕様。FR-7.3)。またAUTOモードのレベル判定は従来どおり
+    ズーム率のみで行うため、「未登録レベルまでズームすると空表示になる」ことは仕様どおりの挙動である
+    (組込サンプル3のL4で確認できる)。

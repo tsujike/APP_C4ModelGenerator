@@ -14,6 +14,7 @@
  */
 
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
+import type { BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawHost } from '../excal/host';
 import type { LayoutResult } from '../layout/types';
 import type { C4Model, Level } from '../model/types';
@@ -23,8 +24,22 @@ import { nextLevel } from './lod';
 
 /** レベル1つ分の事前計算済みデータ(§3データフロー: レベル別レイアウトは遅延/事前生成しキャッシュ)。 */
 export interface LevelData {
-  layout: LayoutResult;
+  /**
+   * C4モードでのみ存在する。設計書§8.3のアンカー保存(レベル切替時のカメラ補正)は、切替前後の
+   * レイアウトに「同じalias/親子関係を持つ対応ノード」があることを前提とするため、C4の統一モデルを
+   * 持たないMermaidモード(post-v1.0)では対応表そのものが作れない。よってMermaidモードでは
+   * undefined とし、`applySwitchElements` はアンカー補正を省いて要素だけを差し替える
+   * (カメラは切替前のscroll/zoomを維持する。Excalidrawのおまかせ再配置よりも
+   * 「見ている位置が飛ばない」ほうが体験として近いため)。
+   */
+  layout?: LayoutResult;
   elements: readonly ExcalidrawElementSkeleton[];
+  /**
+   * Mermaidモードで画像フォールバックが起きた場合のバイナリファイル(`excal/mermaid.ts`参照)。
+   * image要素は`fileId`でこれを参照するだけなので、要素と一緒にExcalidrawへ渡さないと
+   * 画像が表示されない。C4モードでは常に undefined。
+   */
+  files?: BinaryFiles;
 }
 
 export interface LevelControllerState {
@@ -107,8 +122,10 @@ export function createLevelController(
 
     const anchorPoint = host.getAnchorWorldPoint();
     const camState = camera.getState();
+    // Mermaidモード(post-v1.0)ではlayoutが無く、ノードの対応表が作れないためアンカー保存は行わない
+    // (LevelData.layoutのJSDoc参照)。C4モードの挙動は従来どおり。
     const scroll =
-      anchorPoint === null
+      anchorPoint === null || oldData.layout === undefined || newData.layout === undefined
         ? undefined
         : computeAnchorPreservingScroll(
             oldData.layout,
@@ -121,7 +138,7 @@ export function createLevelController(
     // §8.3手順3・4: 要素とカメラ補正を1回のupdateSceneで同時適用する(中間状態を見せない)。
     const scrollForHost =
       scroll !== undefined ? { scrollX: scroll.x, scrollY: scroll.y } : undefined;
-    host.applyLevelSwitch(newData.elements, scrollForHost);
+    host.applyLevelSwitch(newData.elements, scrollForHost, newData.files);
   }
 
   // AUTOモード: ズーム値(正規化s)の変化を監視し、固定中でなければnextLevelの結果へ切り替える。
@@ -167,7 +184,7 @@ export function createLevelController(
       // FR-1.3: カメラ(scroll/zoom)には一切触れない。applySwitchElements(アンカー保存付き
       // レベル切替)とは別経路のhost.updateElementsのみを呼ぶ(このファイル冒頭のupdateModelの
       // JSDoc参照)。
-      host.updateElements(currentData.elements);
+      host.updateElements(currentData.elements, currentData.files);
     },
   };
 }

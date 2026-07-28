@@ -26,10 +26,12 @@
  * `levelController`の現在レベルに対応する `LevelData.elements`
  * (`ExcalidrawElementSkeleton[]`、layoutが生成したそのレベルの全要素で、ビューポートに
  * 表示されているかどうかとは無関係)を渡す。Excalidrawのキャンバスをビューポートでクロップした
- * 部分キャプチャではない。
+ * 部分キャプチャではない。post-v1.0のMermaidモードでは、画像フォールバック時のバイナリ
+ * (`LevelData.files`)も併せて渡す(渡さないと書き出した画像から図が丸ごと欠ける)。
  */
 
 import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
+import type { BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawHost } from '../excal/host';
 import type { Level } from '../model/types';
 import { downloadBlob } from './download';
@@ -51,8 +53,9 @@ export async function exportCurrentLevelSvg(
   host: ExcalidrawHost,
   elements: readonly ExcalidrawElementSkeleton[],
   level: Level,
+  files?: BinaryFiles,
 ): Promise<void> {
-  const svgString = await host.exportSvgString(elements);
+  const svgString = await host.exportSvgString(elements, files);
   downloadBlob(new Blob([svgString], { type: 'image/svg+xml' }), exportFileName(level, 'svg'));
 }
 
@@ -64,7 +67,8 @@ export async function exportCurrentLevelPng(
   host: ExcalidrawHost,
   elements: readonly ExcalidrawElementSkeleton[],
   level: Level,
+  files?: BinaryFiles,
 ): Promise<void> {
-  const blob = await host.exportPngBlob(elements);
+  const blob = await host.exportPngBlob(elements, files);
   downloadBlob(blob, exportFileName(level, 'png'));
 }
