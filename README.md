@@ -1,6 +1,13 @@
-# APP_C4ModelGenerator — C4 Model Whiteboard Viewer
+# Mermarium(マーマリウム)
 
-C4モデル(Context / Containers / Components / Code の4階層でソフトウェアアーキテクチャを表現する手法)をテキスト(Mermaid C4記法のサブセット+拡張)で入力し、ブラウザ上のホワイトボードで閲覧するビューワーです。
+図をテキストで書き、ブラウザ上のホワイトボードで**ズームすると詳しさのレベルが切り替わる**形で閲覧するビューワーです。名前は Mermaid + aquarium の造語で、「人魚(Mermaid)が泳ぐ水槽」を意味します。
+
+2つのモードがあります。
+
+- **Mermaidモード** — 任意のMermaid記法の図を `%%L1`〜`%%L8` のマーカーでレベル別に登録し、ズーム(または L1〜L8 ボタン)で切り替えて見ます。同じテーマを「概略 → 詳細」の8段階で並べたいときに使います。
+- **C4モード** — C4モデル(Context / Containers / Components / Code の4階層でソフトウェアアーキテクチャを表現する手法)をMermaid C4記法のサブセット+拡張で書くと、L1〜L4 が1つのモデルから自動生成されます。
+
+> リポジトリ名・フォルダ名は歴史的経緯から `APP_C4ModelGenerator` / `APP_C4-Model-Whiteboard-Viewer` のままです(アプリ名のみ Mermarium に変更しました)。
 
 ## 概要
 

@@ -1,6 +1,13 @@
-# APP_C4ModelGenerator — C4 Model Whiteboard Viewer
+# Mermarium(マーマリウム)
 
-C4モデル(Context/Containers/Components/Code)をテキスト(Mermaid C4記法サブセット+拡張)で入力し、ブラウザ上のホワイトボードで閲覧するアプリ。**ズームイン/アウトすると閾値で描画レベルが L1↔L2↔L3↔L4 と切り替わるセマンティックズーム**が核機能。サーバー不要、Vite + Vanilla TypeScript。
+図をテキストで入力し、ブラウザ上のホワイトボードで閲覧するアプリ。**ズームイン/アウトすると閾値で描画レベルが切り替わるセマンティックズーム**が核機能。サーバー不要、Vite + Vanilla TypeScript。
+
+- **Mermaidモード**(FR-7): 任意のMermaid記法の図を `%%L1`〜`%%L8` マーカーでレベル別に登録して切り替える(L1〜L8)。
+- **C4モード**: C4モデル(Context/Containers/Components/Code)をMermaid C4記法サブセット+拡張で書くと L1〜L4 を自動生成する(C4は4階層しか定義しないため L5 以降は無い / FR-7.9)。
+
+アプリ名は post-v1.0 に「C4 Model Whiteboard Viewer」から **Mermarium**(Mermaid + aquarium の造語)へ変更した。
+**リポジトリ名・フォルダ名・localStorageキーは変更していない**(`APP_C4ModelGenerator` / `c4-model-whiteboard-viewer:*`)。
+localStorageキーを変えるとユーザーの保存済みソースとタイトルが失われるため、改名しないこと。
 
 ## ドキュメント(実装前に必読)
 

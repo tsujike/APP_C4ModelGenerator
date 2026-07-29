@@ -763,3 +763,31 @@
   Excalidrawのズーム上限(3000%)内で可能だが、実運用では手動固定ボタンの方が現実的な操作になると思われる。
   しきい値の再調整が必要になった場合は `constants.ts` の `LOD_ZOOM_THRESHOLDS` 末尾4値のみを変えれば足りる
   (先頭3値はFR-5.1の受入基準に紐づくため据え置くこと)。
+
+## 2026-07-29 アプリ名を「Mermarium(マーマリウム)」に改称
+
+- **経緯**: Kennyの決定。「C4モデルの使い方より、Mermaidの横縦展開の方が需要がありそう」との判断から、
+  アプリ名を旧称「C4 Model Whiteboard Viewer」(および検討段階で挙がっていた「ZoomBoard」)ではなく
+  **Mermarium(マーマリウム)** とした。Mermaid + aquarium の造語で「人魚(Mermaid)が泳ぐ水槽」の意。
+- **変更範囲**: `index.html`の`<title>`とツールバーのブランド表示(`#app-brand`)、`src/style.css`の
+  `#app-brand`スタイル、`package.json`の`name`(`app-c4modelgenerator`→`mermarium`)、`README.md`と
+  `CLAUDE.md`のH1およびリード文、`docs/01`〜`docs/03`のH1(および要件定義書のプロジェクト名欄)、
+  `flyer.html`の`<title>`・`<h1>`・フッタータグ。
+- **設計判断(申し送り)**:
+  1. **localStorageキーは改名しない**。`STORAGE_KEY = 'c4-model-whiteboard-viewer:source'` と
+     `STORAGE_TITLE_KEY = 'c4-model-whiteboard-viewer:title'` を`mermarium:*`に変えると、既存利用者の
+     保存済みソースとタイトルが読めなくなり黙って失われる。改名の価値より損失が大きいため据え置いた。
+     移行が必要になった場合は「旧キーを読んで新キーへ書き戻す」ワンショット移行を別途設計すること。
+  2. **リポジトリ名・フォルダ名は変更しない**(`APP_C4ModelGenerator` /
+     `APP_C4-Model-Whiteboard-Viewer`)。GitHubのリポジトリ名変更とローカルclone先の移動はKennyの
+     操作領域であり、コード側から行える変更ではない。設計書§2のディレクトリツリーも実体に合わせて
+     `APP_C4ModelGenerator/` のままにしてある。
+  3. ツールバー先頭に**アプリ名の固定表示**(`#app-brand`)を追加した。改名が実行中の画面のどこにも
+     現れないのは不自然なため。既存の`#title-input`(ドキュメントタイトル)と紛らわしくならないよう、
+     入力欄ではないことが分かる色(#2a6f97)と字形にしている。
+  4. README/CLAUDE.mdのリード文は、Kennyの「Mermaidの方が需要がある」という判断に合わせ、
+     Mermaidモードを先・C4モードを後の順に書き換えた。機能そのものの優劣・削除は行っていない。
+- **検証結果**: `npm test` 262件すべてpass、`tsc --noEmit`・`npm run lint`・`npm run build` すべて成功。
+  Playwrightの実ブラウザでツールバーに「Mermarium」が表示されること、`document.title`が
+  「Mermarium(マーマリウム)」であること、localStorage移行の回帰が無い(旧キーで保存したソースが
+  リロード後も復元される)ことを確認(`PAGE_ERRORS=[]`)。
