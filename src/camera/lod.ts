@@ -22,26 +22,32 @@ import type { Level } from '../model/types';
  * 現在レベルと現在の正規化ズーム値 s から、次に適用すべきレベルを1ステップで決定する。
  *
  * s が1回の呼び出しで大きく変化した場合(例: プログラム的なジャンプや、テスト上の極端な
- * 入力)は、複数レベルをまたいで連鎖的に遷移させる(例: current=L1, s=5.0 → L4を返す。
- * L2止まりにはしない)。§8.2はこのケースを明示していないが、「sに対して一意に定まるべき
- * レベル」という閾値表(FR-5.1)の意味論と矛盾しない最単純な解釈として、上昇側・下降側それぞれの
- * 閾値判定を該当方向へ連鎖的に(閾値を1段ずつ跨ぎながら)適用する。s は単一の値なので、
+ * 入力)は、複数レベルをまたいで連鎖的に遷移させる(例: current=L1, s=5.0, maxLevel=8 →
+ * L4を返す。L2止まりにはしない)。§8.2はこのケースを明示していないが、「sに対して一意に定まる
+ * べきレベル」という閾値表(FR-5.1)の意味論と矛盾しない最単純な解釈として、上昇側・下降側
+ * それぞれの閾値判定を該当方向へ連鎖的に(閾値を1段ずつ跨ぎながら)適用する。s は単一の値なので、
  * 上昇側ループと下降側ループは互いに排他的にしか作用しない(閾値が単調増加かつヒステリシス
  * 係数<1のため、両方が同時に条件を満たすことはない)。
+ *
+ * `maxLevel`: 上昇方向の上限レベル。C4モードは4層(L1〜L4)しか描画データを持たないため、
+ * 呼び出し側(camera/levelController.ts)がC4モードでは4、Mermaidモードでは8を渡し分けることで
+ * 「C4モードではL5以降に遷移しない」を本関数の外側で保証する(本関数自体はC4/Mermaidの区別を
+ * 知らない。あくまで閾値配列とmaxLevelだけを見る純関数のまま保つ)。
  */
-export function nextLevel(current: Level, s: number): Level {
+export function nextLevel(current: Level, s: number, maxLevel: Level): Level {
   let level = current;
 
   // 上昇方向: 上側閾値に達したら即遷移(ヒステリシスなし)。複数閾値を跨ぐ場合は連鎖する。
-  // 添字 level-1 は while条件の level<4(=level は 1..3)によりつねに 0..2 の範囲に収まり、
-  // LOD_ZOOM_THRESHOLDS(3要素)の範囲内であることが構造的に保証されるため `!` で安全に参照する
-  // (tsconfigのnoUncheckedIndexedAccess対応。src/parser/parseC4Block.tsの既存箇所と同じ考え方)。
-  while (level < 4 && s >= LOD_ZOOM_THRESHOLDS[level - 1]!) {
+  // 添字 level-1 は while条件の level<maxLevel(=level は current..maxLevel-1、かつ1<=maxLevel<=8)
+  // によりつねに 0..6 の範囲に収まり、LOD_ZOOM_THRESHOLDS(7要素)の範囲内であることが構造的に
+  // 保証されるため `!` で安全に参照する(tsconfigのnoUncheckedIndexedAccess対応。
+  // src/parser/parseC4Block.tsの既存箇所と同じ考え方)。
+  while (level < maxLevel && s >= LOD_ZOOM_THRESHOLDS[level - 1]!) {
     level = (level + 1) as Level;
   }
 
   // 下降方向: 現在レベルの下側(進入)閾値×ヒステリシス係数を下回ったら遷移。連鎖する。
-  // 添字 level-2 は while条件の level>1(=level は 2..4)によりつねに 0..2 の範囲に収まる。
+  // 添字 level-2 は while条件の level>1(=level は 2..8)によりつねに 0..6 の範囲に収まる。
   while (level > 1 && s < LOD_ZOOM_THRESHOLDS[level - 2]! * LOD_HYSTERESIS_FACTOR) {
     level = (level - 1) as Level;
   }

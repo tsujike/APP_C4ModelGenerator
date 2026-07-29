@@ -26,8 +26,10 @@ describe('isMermaidModeSource', () => {
     expect(isMermaidModeSource('%%L1 は概要レベル\nC4Context')).toBe(false);
   });
 
+  // L8拡張(FR-7.9)で `%%L5`〜`%%L8` は正規のマーカーになったため、範囲外の代表を
+  // `%%L0` / `%%L9` に差し替えた(このテストの意図は「範囲外の数字はマーカーにしない」で不変)。
   it('does not treat out-of-range level numbers as markers', () => {
-    expect(isMermaidModeSource('%%L0\n%%L5\nC4Context')).toBe(false);
+    expect(isMermaidModeSource('%%L0\n%%L9\nC4Context')).toBe(false);
   });
 
   it('returns true for the built-in Mermaid sample', () => {
@@ -158,15 +160,71 @@ describe('splitMermaidLevels', () => {
     expect(issues.every((issue) => issue.severity === 'warning')).toBe(true);
   });
 
-  it('splits the built-in sample into L1/L2/L3 with L4 deliberately unregistered', () => {
+  it('splits the built-in sample into L1〜L7 with L8 deliberately unregistered', () => {
+    // post-v1.0のL5〜L8拡張(セマンティックズームL1〜L8化)に伴い、サンプルはL1〜L7を実図で埋め、
+    // 「未登録レベルは何も表示しない」の確認用としてL8だけを意図的に未登録にしている
+    // (`src/samples/mermaid-levels.ts`のJSDoc参照。従来はL4がその役割だった)。
     const { levels, issues } = splitMermaidLevels(mermaidLevelsSample);
 
     expect(issues).toEqual([]);
-    expect([...levels.keys()]).toEqual([1, 2, 3]);
+    expect([...levels.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(levels.get(1)?.text.startsWith('flowchart TD')).toBe(true);
     expect(levels.get(2)?.text).toContain('subgraph');
     expect(levels.get(3)?.text.startsWith('sequenceDiagram')).toBe(true);
-    expect(levels.has(4)).toBe(false);
+    expect(levels.get(4)?.text.startsWith('stateDiagram-v2')).toBe(true);
+    expect(levels.get(5)?.text.startsWith('erDiagram')).toBe(true);
+    expect(levels.get(6)?.text.startsWith('flowchart TD')).toBe(true);
+    expect(levels.get(7)?.text.startsWith('sequenceDiagram')).toBe(true);
+    expect(levels.has(8)).toBe(false);
+  });
+});
+
+// post-v1.0: セマンティックズームL1〜L8拡張に伴い、Mermaidモード専用マーカーがL8まで
+// 受け付けられるようになった(LEVEL_MARKER_PATTERN = /^%%\s*L([1-8])\s*$/i)。
+describe('post-v1.0: L5〜L8マーカー拡張(Mermaidモード専用)', () => {
+  it('accepts %%L5〜%%L8 as markers (isMermaidModeSource)', () => {
+    expect(isMermaidModeSource('%%L5\nflowchart TD')).toBe(true);
+    expect(isMermaidModeSource('%%L6\nflowchart TD')).toBe(true);
+    expect(isMermaidModeSource('%%L7\nflowchart TD')).toBe(true);
+    expect(isMermaidModeSource('%%L8\nflowchart TD')).toBe(true);
+  });
+
+  it('splitMermaidLevels registers keys 5〜8 with their bodies', () => {
+    const source = [
+      '%%L5',
+      'erDiagram',
+      '  A ||--o{ B : has',
+      '%%L6',
+      'flowchart TD',
+      '  A --> B',
+      '%%L7',
+      'sequenceDiagram',
+      '  A->>B: hi',
+      '%%L8',
+      'flowchart TD',
+      '  X --> Y',
+    ].join('\n');
+
+    const { levels, issues } = splitMermaidLevels(source);
+
+    expect(issues).toEqual([]);
+    expect([...levels.keys()]).toEqual([5, 6, 7, 8]);
+    expect(levels.get(5)?.text).toBe('erDiagram\n  A ||--o{ B : has');
+    expect(levels.get(6)?.text).toBe('flowchart TD\n  A --> B');
+    expect(levels.get(7)?.text).toBe('sequenceDiagram\n  A->>B: hi');
+    expect(levels.get(8)?.text).toBe('flowchart TD\n  X --> Y');
+  });
+
+  it('does not accept %%L0 / %%L9 / %%L10 as markers', () => {
+    expect(isMermaidModeSource('%%L0\nC4Context')).toBe(false);
+    expect(isMermaidModeSource('%%L9\nC4Context')).toBe(false);
+    expect(isMermaidModeSource('%%L10\nC4Context')).toBe(false);
+  });
+
+  it('is tolerant of spacing and lower case for L5〜L8, same as the existing L1〜L4 rule', () => {
+    expect(isMermaidModeSource('%% L8\nflowchart TD')).toBe(true);
+    expect(isMermaidModeSource('  %%l5  \nflowchart TD')).toBe(true);
+    expect(isMermaidModeSource('%%\tL6\nflowchart TD')).toBe(true);
   });
 });
 

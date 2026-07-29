@@ -46,6 +46,12 @@ export interface LevelControllerState {
   level: Level;
   /** null = AUTO。Level値なら手動固定中のレベル(FR-5.5)。 */
   levelLock: Level | null;
+  /**
+   * 現在のモードで到達可能な最大レベル(C4モード=4、Mermaidモード=8)。ツールバー(main.ts)が
+   * これを購読してL5〜L8ボタンの有効/無効を切り替える(「1関心事=1コントローラ」の既存パターンを
+   * 踏襲し、モード判定そのものはlevelControllerに閉じ、ボタンの見た目はmain.ts側が決める)。
+   */
+  maxLevel: Level;
 }
 
 export type LevelControllerListener = (state: LevelControllerState) => void;
@@ -60,7 +66,10 @@ export interface LevelController {
   /** AUTOモードに戻す(FR-5.5)。現在のズーム値に基づき、必要ならその場で再判定・切替する。 */
   setAuto(): void;
   /**
-   * T4-1: テキスト編集による再解析後、新しいモデル+4レベル分のlevelDataに丸ごと差し替える。
+   * T4-1: テキスト編集による再解析後、新しいモデル+全レベル分のlevelDataに丸ごと差し替える。
+   * 併せて`maxLevel`(C4モード=4、Mermaidモード=8)も更新する。モードは編集のたびに変わり得る
+   * (例: C4ソースにMermaidマーカーを書き足す/消す)ため、呼び出し側(main.ts)は再解析のたびに
+   * 判定し直した値をここへ渡す。
    *
    * 設計判断(申し送り): レベル切替(§8.3のアンカー保存)とライブ編集再描画(FR-1.3)は
    * 「要素を差し替える」という操作面では似ているが、目的が異なる別の関心事として扱う。
@@ -73,16 +82,24 @@ export interface LevelController {
    *
    * `model`/`levelData`はこのコントローラが以後保持する唯一の情報源になる(古い方は破棄する=
    * レイアウトキャッシュの破棄そのもの)。現在表示中のレベルのlevelDataが(あり得ないはずだが)
-   * 見つからない場合は何もしない(ALL_LEVELSの4レベル全てを毎回計算する前提が破られた場合の
+   * 見つからない場合は何もしない(ALL_LEVELSの8レベル全てを毎回計算する前提が破られた場合の
    * 防御。呼び出し側=main.tsの契約違反であり通常到達しない)。
+   *
+   * 丸め(申し送り): Mermaidモード(maxLevel=8)でL7等を表示中に、編集でマーカーが消えてC4モード
+   * (maxLevel=4)へ戻った場合、`level`/`levelLock`がそのままだと存在しないレベルに留まってしまう。
+   * これを避けるため、`level`がmaxLevelを超えていればmaxLevelへ丸める。`levelLock`が非nullで
+   * maxLevelを超えている場合も同様に丸める(固定先そのものが消滅しているため)。丸めが起きた場合も
+   * 起きなかった場合も、要素の差し替えは`applySwitchElements`を使わず`host.updateElements`のみで
+   * 行う(FR-1.3: 編集経路ではカメラに触れない。丸めも「編集の結果」であり例外にしない)。
    */
-  updateModel(model: C4Model, levelData: ReadonlyMap<Level, LevelData>): void;
+  updateModel(model: C4Model, levelData: ReadonlyMap<Level, LevelData>, maxLevel: Level): void;
 }
 
 /**
- * `levelData` は1〜4の全レベル分が揃っている前提(main.tsが起動時に一括計算する。設計書§3の
+ * `levelData` は1〜8の全レベル分が揃っている前提(main.tsが起動時に一括計算する。設計書§3の
  * 「レベル別レイアウトは遅延生成でよい」に対し、本実装ではサンプル規模が小さいため単純さを
- * 優先し起動時に4レベル全て計算する、とPROGRESS.mdに申し送り予定)。
+ * 優先し起動時に全レベル計算する、とPROGRESS.mdに申し送り予定。C4モードのL5〜L8は
+ * `{ elements: [] }` の空データで埋められる=main.tsのbuildLevelData参照)。
  */
 export function createLevelController(
   host: ExcalidrawHost,
@@ -90,6 +107,7 @@ export function createLevelController(
   initialModel: C4Model,
   initialLevelData: ReadonlyMap<Level, LevelData>,
   initialLevel: Level,
+  initialMaxLevel: Level,
 ): LevelController {
   // T4-1: 編集のたびに丸ごと差し替わる可変の参照(updateModel参照)。以前はcreateLevelController
   // の固定引数だったが、テキスト編集の度に「新しいモデル+新しい4レベル分levelData」で
@@ -97,7 +115,11 @@ export function createLevelController(
   // レイアウトキャッシュの取り違え防止)。
   let model: C4Model = initialModel;
   let levelData: ReadonlyMap<Level, LevelData> = initialLevelData;
-  let state: LevelControllerState = { level: initialLevel, levelLock: null };
+  let state: LevelControllerState = {
+    level: initialLevel,
+    levelLock: null,
+    maxLevel: initialMaxLevel,
+  };
   const listeners = new Set<LevelControllerListener>();
 
   function setState(next: LevelControllerState): void {
@@ -117,7 +139,7 @@ export function createLevelController(
     if (target === state.level) return;
     const oldData = levelData.get(state.level);
     const newData = levelData.get(target);
-    // levelDataは1〜4全て事前計算済み(呼び出し前提)のため、到達しない分岐。
+    // levelDataは1〜8全て事前計算済み(呼び出し前提)のため、到達しない分岐。
     if (oldData === undefined || newData === undefined) return;
 
     const anchorPoint = host.getAnchorWorldPoint();
@@ -145,7 +167,7 @@ export function createLevelController(
   camera.subscribe((camState) => {
     if (state.levelLock !== null) return;
     if (camState.scale === null) return;
-    const target = nextLevel(state.level, camState.scale);
+    const target = nextLevel(state.level, camState.scale, state.maxLevel);
     if (target === state.level) return;
     applySwitchElements(target);
     setState({ ...state, level: target });
@@ -164,27 +186,38 @@ export function createLevelController(
     },
     lockTo(level) {
       applySwitchElements(level);
-      setState({ level, levelLock: level });
+      setState({ ...state, level, levelLock: level });
     },
     setAuto() {
       // AUTOに戻した瞬間、現在のズーム値がすでに現在レベルと乖離していれば即座に反映する
       // (固定中にズーム操作されていた場合、ボタンを押すまで反映を待たせないための解釈。申し送り)。
       const camState = camera.getState();
-      const target = camState.scale === null ? state.level : nextLevel(state.level, camState.scale);
+      const target =
+        camState.scale === null
+          ? state.level
+          : nextLevel(state.level, camState.scale, state.maxLevel);
       if (target !== state.level) applySwitchElements(target);
-      setState({ level: target, levelLock: null });
+      setState({ ...state, level: target, levelLock: null });
     },
-    updateModel(newModel, newLevelData) {
+    updateModel(newModel, newLevelData, maxLevel) {
       model = newModel;
       levelData = newLevelData;
-      const currentData = levelData.get(state.level);
+      // Mermaidモードでマーカーを消してC4モードへ戻った(=maxLevelが下がった)瞬間、L7のような
+      // 存在しないレベルに留まらないよう、現在レベル/固定先がmaxLevelを超えていれば丸める
+      // (このファイル冒頭のupdateModelのJSDoc「丸め」参照)。
+      const roundedLevel = state.level > maxLevel ? maxLevel : state.level;
+      const roundedLevelLock =
+        state.levelLock !== null && state.levelLock > maxLevel ? maxLevel : state.levelLock;
+
+      const currentData = levelData.get(roundedLevel);
       // newLevelDataは呼び出し側(main.ts)がALL_LEVELS全てを毎回計算する契約のため、
       // 通常到達しない(呼び出し側契約違反時のみの防御)。
       if (currentData === undefined) return;
       // FR-1.3: カメラ(scroll/zoom)には一切触れない。applySwitchElements(アンカー保存付き
-      // レベル切替)とは別経路のhost.updateElementsのみを呼ぶ(このファイル冒頭のupdateModelの
-      // JSDoc参照)。
+      // レベル切替)とは別経路のhost.updateElementsのみを呼ぶ(丸めが発生した場合も同様。
+      // このファイル冒頭のupdateModelのJSDoc参照)。
       host.updateElements(currentData.elements, currentData.files);
+      setState({ level: roundedLevel, levelLock: roundedLevelLock, maxLevel });
     },
   };
 }

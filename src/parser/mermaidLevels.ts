@@ -3,7 +3,7 @@
  *
  * ユーザー要望:「Mermaid記法も対応したい。レベルによって、登録したMermaidに表示が変わるだけでOK。
  * C4モデルとの連携は不要」。この要望に対する最単純解釈として、1つのソーステキストの中に
- * `%%L1`〜`%%L4` のマーカー行で区切って最大4つのMermaid図を登録し、表示レベルの切替に応じて
+ * `%%L1`〜`%%L8` のマーカー行で区切って最大8つのMermaid図を登録し、表示レベルの切替に応じて
  * 「そのレベルに登録された図」へ丸ごと差し替える方式を採る。
  *
  * 設計判断(申し送り):
@@ -15,6 +15,9 @@
  *   `isMermaidModeSource` に閉じ、`model/build.ts`(C4モード)は一切変更しない。
  * - 未登録レベルは「何も表示しない」(ユーザー確認済み)。よってこの関数は未登録レベルの
  *   エントリを返さず、呼び出し側(main.ts)が空要素として扱う。
+ * - L5〜L8はMermaidモード専用(C4モデルは4層で定義されるためC4モードには存在しない)。
+ *   `model/types.ts`の`Level`型がpost-v1.0でL1〜L8へ拡張されたことに伴い、Mermaidモードの
+ *   マーカーもL8まで受け付ける(C4モードの`Level`の意味論・4層構造は変わらない)。
  *
  * `parser/` はDOM非依存の純関数のみで構成する(実装指示書§4)ため、ここではMermaidの
  * 解析・描画は一切行わない(それは `excal/mermaid.ts` の責務)。
@@ -28,8 +31,9 @@ import type { ParseIssue } from './types';
  * (`%%L1` / `%% L1` / `%%  l1  ` はすべて同じ意味)。大文字小文字は区別しない。
  * マーカー行は「その行だけ」でレベルを表す必要がある(`%%L1 なにか` はコメント扱いで
  * マーカーにはしない)。誤ってコメント本文をマーカーと解釈しないための制約。
+ * L1〜L8(post-v1.0のL5〜L8拡張。Mermaidモード専用)を受け付ける。
  */
-const LEVEL_MARKER_PATTERN = /^%%\s*L([1-4])\s*$/i;
+const LEVEL_MARKER_PATTERN = /^%%\s*L([1-8])\s*$/i;
 
 /** 1レベル分の登録内容。 */
 export interface MermaidLevelEntry {
@@ -134,7 +138,7 @@ export function detectMarkerlessMermaidLine(source: string): number | undefined 
 }
 
 /**
- * `%%L1`〜`%%L4` マーカーでソースを最大4つのMermaidソースへ分割する。
+ * `%%L1`〜`%%L8` マーカーでソースを最大8つのMermaidソースへ分割する。
  *
  * - 最初のマーカーより前に書かれた非空行は warning にして無視する(どのレベルにも属さないため)。
  * - 同じレベルのマーカーが複数回現れた場合は初出を採用し、2つ目以降を warning にして無視する
@@ -192,7 +196,7 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
     // 新しいマーカーに到達 → 直前まで収集していたレベルを確定する。
     flush();
 
-    // 正規表現 /^%%\s*L([1-4])\s*$/ が一致した時点でキャプチャは '1'|'2'|'3'|'4' のいずれか。
+    // 正規表現 /^%%\s*L([1-8])\s*$/ が一致した時点でキャプチャは '1'|'2'|'3'|'4'|'5'|'6'|'7'|'8' のいずれか。
     const parsed = Number(matched[1]) as Level;
     currentMarkerLine = lineNumber;
     currentLines = [];

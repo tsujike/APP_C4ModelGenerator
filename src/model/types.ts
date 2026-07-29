@@ -7,7 +7,9 @@
 
 export type NodeKind = 'person' | 'system' | 'container' | 'component' | 'class' | 'boundary'; // Enterprise_Boundary等の純粋なグループ
 export type NodeVariant = 'default' | 'db' | 'queue';
-export type Level = 1 | 2 | 3 | 4; // Context/Containers/Components/Code
+// L1〜L4=Context/Containers/Components/Code(C4モデル自体の4層)。
+// L5〜L8はMermaidモード専用の追加レベル(C4モデル自体は4層で定義されるため、C4モードでは使わない)。
+export type Level = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 export interface C4Node {
   alias: string; // ソース内で一意。グローバル名前空間

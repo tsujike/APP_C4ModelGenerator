@@ -39,7 +39,14 @@ import {
   type TitleController,
 } from './ui/title';
 
-const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4];
+const ALL_LEVELS: readonly Level[] = [1, 2, 3, 4, 5, 6, 7, 8];
+/**
+ * C4モードが実際に持つレベル(C4モデル自体が4層で定義されるため)。`buildLevelData`の
+ * 射影/レイアウト計算はこの4レベルのみで行い、L5〜L8は空の`LevelData`で埋める
+ * (`project(model, 5)`のような無意味な呼び出しをしないため。かつlevelControllerの
+ * 「全レベル揃っている」契約=ALL_LEVELS全キーの存在は保つ)。
+ */
+const C4_LEVELS: readonly Level[] = [1, 2, 3, 4];
 /** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
 const INITIAL_LEVEL: Level = 2;
 
@@ -98,7 +105,14 @@ async function bootstrap(): Promise<void> {
 
   const host = mountExcalidraw(excalidrawContainer, initialData.elements, initialData.files);
   const camera = setupCamera(host);
-  const levelController = createLevelController(host, camera, built.model, levelData, startLevel);
+  const levelController = createLevelController(
+    host,
+    camera,
+    built.model,
+    levelData,
+    startLevel,
+    built.maxLevel,
+  );
   setupLevelControls(levelController);
   setupLiveEditing(editor, levelController, issuesPanel, (newLevelData) => {
     levelData = newLevelData;
@@ -140,7 +154,7 @@ async function reparseAndRerender(
   const built = await buildFromSource(source);
   issuesPanel.update(built.issues);
   const levelData = built.levelData;
-  levelController.updateModel(built.model, levelData);
+  levelController.updateModel(built.model, levelData, built.maxLevel);
   // T5-1: エクスポートボタンが常に最新のlevelDataを読めるよう、bootstrap側の`let levelData`を
   // 差し替える(このコールバックの実体はbootstrap内のクロージャ)。
   onLevelDataUpdated(levelData);
@@ -280,7 +294,7 @@ function setupExporter(
   svgButton?.addEventListener('click', () => {
     const { level } = levelController.getState();
     const data = getLevelData().get(level);
-    // levelDataは1〜4全て事前計算済み(buildLevelDataの契約)のため到達しない分岐。
+    // levelDataは1〜8全て事前計算済み(buildLevelDataの契約)のため到達しない分岐。
     if (data === undefined) return;
     void exportCurrentLevelSvg(host, data.elements, level, data.files);
   });
@@ -294,12 +308,14 @@ function setupExporter(
 }
 
 /**
- * 表示レベル1〜4すべての LayoutResult+Excalidraw要素を計算する(設計書§3「レベル別レイアウトは
+ * C4モード(L1〜L4)すべての LayoutResult+Excalidraw要素を計算する(設計書§3「レベル別レイアウトは
  * 遅延生成でよい。テキスト変更で全キャッシュ破棄」に対する判断: 本サンプルはノード十数個規模で
  * 4レベル合計の計算も軽量なため、遅延生成の複雑さ(初回訪問時計算+キャッシュ管理)を導入せず、
  * 起動時に一括計算する方を単純さ優先で選んだ。NFR-3の負荷規模(200ノード/300エッジ)でも
  * 「解析+全レベルレイアウト再計算が1秒以内」が要件であり、起動時一括計算はこの要件そのものと
  * 整合する。テキスト編集によるキャッシュ破棄(T4スコープ)は本タスクの対象外)。
+ * C4モデル自体は4層でしか定義されないため、L5〜L8は`project`/`layout`を呼ばず空データで埋める
+ * (C4_LEVELS参照)。
  */
 /** 1回の解析で得られる、画面更新に必要な一式(モード非依存の共通の形)。 */
 interface BuildResult {
@@ -307,12 +323,15 @@ interface BuildResult {
   model: C4Model;
   issues: ParseIssue[];
   levelData: Map<Level, LevelData>;
+  /** そのモードで到達可能な最大レベル。C4モードは4、Mermaidモードは8(levelController.ts参照)。 */
+  maxLevel: Level;
 }
 
 /**
- * post-v1.0(Mermaidモード): ソーステキストからモードを判定し、対応する経路で4レベル分の
- * 表示データを作る。2つのモードは排他(Kenny確認済み: 「Mermaidモードなら4レベル全部Mermaidで
- * よい」「C4との混在はない」)なので、判定は`isMermaidModeSource`の一箇所だけで済む。
+ * post-v1.0(Mermaidモード): ソーステキストからモードを判定し、対応する経路で表示データを作る。
+ * 2つのモードは排他(Kenny確認済み: 「Mermaidモードなら4レベル全部Mermaidでよい」「C4との混在は
+ * ない」。post-v1.0のL5〜L8拡張でもこの排他性は変わらず、Mermaidモードは8レベル全部を使う)ので、
+ * 判定は`isMermaidModeSource`の一箇所だけで済む。
  *
  * 設計判断(申し送り): モード分岐をこの1関数に閉じることで、C4モードの経路
  * (buildModel → project → layout → toExcalidraw)には一切手を入れていない。既存の全テスト・
@@ -334,24 +353,24 @@ async function buildFromSource(source: string): Promise<BuildResult> {
       severity: 'error',
       line: markerlessLine,
       message:
-        'Mermaidの図のようですが、レベルマーカーがありません。図の先頭に %%L1 (〜%%L4)の行を追加すると、そのレベルにこの図を表示します。',
+        'Mermaidの図のようですが、レベルマーカーがありません。図の先頭に %%L1 (〜%%L8)の行を追加すると、そのレベルにこの図を表示します。',
     });
   }
 
-  return { model, issues, levelData: await buildLevelData(model) };
+  return { model, issues, levelData: await buildLevelData(model), maxLevel: 4 };
 }
 
 /**
- * Mermaidモード: `%%L1`〜`%%L4` で登録された各図を Excalidraw要素へ変換する。
+ * Mermaidモード: `%%L1`〜`%%L8` で登録された各図を Excalidraw要素へ変換する。
  *
  * - 未登録レベルは空の`LevelData`(elements: [])にする。Kenny確認済みの「未登録のレベルは
- *   何も表示しない」の実装であり、同時に「levelDataは1〜4全て揃っている」という
+ *   何も表示しない」の実装であり、同時に「levelDataは1〜8全て揃っている」という
  *   `camera/levelController.ts`の既存契約も保てる(欠けたキーを許すと切替が無反応になる)。
  * - Mermaidの文法エラーはそのレベルだけを空にし、issuesパネルにerrorとして出す。他のレベルは
- *   そのまま表示できる(1つのタイポで4レベル全部が消えるのを避ける)。
+ *   そのまま表示できる(1つのタイポで8レベル全部が消えるのを避ける)。
  * - `layout`は付けない(アンカー保存は行わない。`LevelData.layout`のJSDoc参照)。
  *
- * 4レベル分の変換は`Promise.all`で並行に走らせる(C4モードの`buildLevelData`と同じ形)。
+ * 8レベル分の変換は`Promise.all`で並行に走らせる(C4モードの`buildLevelData`と同じ形)。
  */
 async function buildMermaidLevelData(source: string): Promise<BuildResult> {
   const { levels, issues } = splitMermaidLevels(source);
@@ -376,7 +395,7 @@ async function buildMermaidLevelData(source: string): Promise<BuildResult> {
     }),
   );
 
-  return { model: EMPTY_MODEL, issues, levelData: new Map(entries) };
+  return { model: EMPTY_MODEL, issues, levelData: new Map(entries), maxLevel: 8 };
 }
 
 /** 外部ライブラリ境界のcatch節(`unknown`)から表示用メッセージを取り出す(実装指示書§4: any禁止)。 */
@@ -406,13 +425,18 @@ function pickInitialLevel(levelData: ReadonlyMap<Level, LevelData>): Level {
 
 async function buildLevelData(model: C4Model): Promise<Map<Level, LevelData>> {
   const entries = await Promise.all(
-    ALL_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {
+    C4_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {
       const projected = project(model, level);
       const layoutResult = await layout(model, projected);
       const elements = toExcalidraw(layoutResult);
       return [level, { layout: layoutResult, elements }];
     }),
   );
+  // levelControllerは「ALL_LEVELS(1〜8)全キーが揃っている」ことを前提とするため、C4モードには
+  // 存在しないL5〜L8を空の`LevelData`で埋める(main.ts冒頭のC4_LEVELSのJSDoc参照)。
+  for (const level of ALL_LEVELS) {
+    if (!C4_LEVELS.includes(level)) entries.push([level, { elements: [] }]);
+  }
   return new Map(entries);
 }
 
@@ -444,9 +468,12 @@ function setupCamera(host: ExcalidrawHost): CameraController {
 }
 
 /**
- * T3-2: レベル手動固定(L1〜L4)/AUTOのツールバーボタンを配線し、現在レベルをツールバー文言と
+ * T3-2: レベル手動固定(L1〜L8)/AUTOのツールバーボタンを配線し、現在レベルをツールバー文言と
  * ビューワー内バッジの両方に表示する(FR-5.6: 「ツールバーとビューワー内バッジに常時表示」を
  * 文字どおり両方実装する解釈。申し送り)。
+ * post-v1.0で追加: L5〜L8はMermaidモード専用のため、`state.maxLevel`(levelController.ts参照)を
+ * 超えるレベルのボタンは`disabled`にする。モードは編集のたびに切り替わり得るので、subscribeの
+ * コールバック内で毎回再評価する(固定値でキャッシュしない)。
  */
 function setupLevelControls(levelController: LevelController): void {
   const levelButtons = new Map(
@@ -470,6 +497,9 @@ function setupLevelControls(levelController: LevelController): void {
   levelController.subscribe((state) => {
     for (const [level, button] of levelButtons) {
       button?.classList.toggle('active', level === state.level);
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = level > state.maxLevel;
+      }
     }
     autoButton?.classList.toggle('active', state.levelLock === null);
 

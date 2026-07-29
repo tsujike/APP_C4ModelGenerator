@@ -8,9 +8,17 @@
  * L1: zoom < 0.75
  * L2: 0.75 <= zoom < 1.5
  * L3: 1.5 <= zoom < 3.0
- * L4: 3.0 <= zoom
+ * L4: 3.0 <= zoom < 4.5
+ * L5: 4.5 <= zoom < 6.75
+ * L6: 6.75 <= zoom < 10.0
+ * L7: 10.0 <= zoom < 15.0
+ * L8: 15.0 <= zoom
+ *
+ * L5以降はMermaidモード専用。C4モードでは`nextLevel`にmaxLevel=4を渡すため、
+ * L4を超えるしきい値(先頭3要素より後ろ)には到達しない(C4モードの挙動は不変)。
+ * 先頭3要素([0.75, 1.5, 3.0])はFR-5.1受入基準・既存lodテストが直接参照するため変更しない。
  */
-export const LOD_ZOOM_THRESHOLDS = [0.75, 1.5, 3.0] as const;
+export const LOD_ZOOM_THRESHOLDS = [0.75, 1.5, 3.0, 4.5, 6.75, 10.0, 15.0] as const;
 
 /**
  * ヒステリシス係数。レベルを下げる(L4→L3等)方向にのみ適用し、

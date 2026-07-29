@@ -135,6 +135,21 @@ function createLevelData(): { levelData: Map<Level, LevelData>; model: C4Model }
   return { levelData, model };
 }
 
+/**
+ * post-v1.0のL5〜L8拡張用。`createLevelData()`のL1〜L4に加え、L5〜L8を
+ * `{ elements }` のみ(layoutなし)で埋める。Mermaidモードのlevelデータは
+ * `LevelData.layout`を持たない(`camera/levelController.ts`のJSDoc参照)ため、それに倣う。
+ */
+function createLevelDataExtended(): { levelData: Map<Level, LevelData>; model: C4Model } {
+  const { levelData, model } = createLevelData();
+  const extended = new Map<Level, LevelData>(levelData);
+  const extraLevels: Level[] = [5, 6, 7, 8];
+  for (const level of extraLevels) {
+    extended.set(level, { elements: elementsFor(level) });
+  }
+  return { levelData: extended, model };
+}
+
 describe('createLevelController: AUTOモード(FR-5.1/5.2)', () => {
   it('scaleがしきい値を跨ぐとnextLevelどおりに切り替わり、host.applyLevelSwitchが呼ばれる', () => {
     const { levelData, model } = createLevelData();
@@ -147,8 +162,8 @@ describe('createLevelController: AUTOモード(FR-5.1/5.2)', () => {
       scale: 1,
     });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
-    expect(controller.getState()).toEqual({ level: 2, levelLock: null });
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
+    expect(controller.getState()).toEqual({ level: 2, levelLock: null, maxLevel: 4 });
 
     // s=1.6 → L2→L3(閾値1.5)。
     emit({ scrollX: 0, scrollY: 0, zoom: 0.96, z0: 0.6, scale: 1.6 });
@@ -171,7 +186,7 @@ describe('createLevelController: AUTOモード(FR-5.1/5.2)', () => {
       scale: 1,
     });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
     emit({ scrollX: 0, scrollY: 0, zoom: 0.72, z0: 0.6, scale: 1.2 }); // まだL2範囲(0.75<=s<1.5)
 
     expect(controller.getState().level).toBe(2);
@@ -189,7 +204,7 @@ describe('createLevelController: AUTOモード(FR-5.1/5.2)', () => {
       scale: 1,
     });
 
-    createLevelController(host, camera, model, levelData, 2);
+    createLevelController(host, camera, model, levelData, 2, 4);
     emit({ scrollX: 0, scrollY: 0, zoom: 0.96, z0: 0.6, scale: 1.6 });
 
     expect(applyCalls).toHaveLength(1);
@@ -209,10 +224,10 @@ describe('createLevelController: 手動固定(FR-5.5)', () => {
       scale: 1,
     });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
     controller.lockTo(4);
 
-    expect(controller.getState()).toEqual({ level: 4, levelLock: 4 });
+    expect(controller.getState()).toEqual({ level: 4, levelLock: 4, maxLevel: 4 });
     expect(applyCalls).toHaveLength(1);
 
     // 固定中にscaleがL1相当まで下がっても切り替わらない。
@@ -232,7 +247,7 @@ describe('createLevelController: 手動固定(FR-5.5)', () => {
       scale: 1,
     });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
     controller.lockTo(4);
     // 固定中にscaleがL1相当まで下がる(切り替わらないことは上のテストで確認済み)。
     emit({ scrollX: 0, scrollY: 0, zoom: 0.1, z0: 0.6, scale: 0.1 });
@@ -240,7 +255,7 @@ describe('createLevelController: 手動固定(FR-5.5)', () => {
 
     controller.setAuto();
 
-    expect(controller.getState()).toEqual({ level: 1, levelLock: null });
+    expect(controller.getState()).toEqual({ level: 1, levelLock: null, maxLevel: 4 });
     expect(applyCalls).toHaveLength(1);
   });
 
@@ -249,10 +264,10 @@ describe('createLevelController: 手動固定(FR-5.5)', () => {
     const { host, applyCalls } = createMockHost({ x: 50, y: 50 });
     const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
     controller.lockTo(2);
 
-    expect(controller.getState()).toEqual({ level: 2, levelLock: 2 });
+    expect(controller.getState()).toEqual({ level: 2, levelLock: 2, maxLevel: 4 });
     expect(applyCalls).toHaveLength(0);
   });
 });
@@ -263,11 +278,11 @@ describe('createLevelController: subscribe', () => {
     const { host } = createMockHost({ x: 50, y: 50 });
     const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
     const listener = vi.fn();
     const unsubscribe = controller.subscribe(listener);
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenLastCalledWith({ level: 2, levelLock: null });
+    expect(listener).toHaveBeenLastCalledWith({ level: 2, levelLock: null, maxLevel: 4 });
 
     controller.lockTo(3);
     expect(listener).toHaveBeenCalledTimes(2);
@@ -284,7 +299,7 @@ describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
     const { host, applyCalls, updateElementsCalls } = createMockHost({ x: 50, y: 50 });
     const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
 
     const newLevelData = new Map<Level, LevelData>(levelData);
     const newL2Elements: ExcalidrawElementSkeleton[] = [
@@ -292,13 +307,13 @@ describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
     ];
     newLevelData.set(2, { layout: levelData.get(2)!.layout!, elements: newL2Elements });
 
-    controller.updateModel(model, newLevelData);
+    controller.updateModel(model, newLevelData, 4);
 
     expect(updateElementsCalls).toHaveLength(1);
     expect(updateElementsCalls[0]).toEqual(newL2Elements);
     // レベル/固定状態やapplyLevelSwitch(アンカー保存経路)は一切呼ばれない(FR-1.3: カメラ維持)。
     expect(applyCalls).toHaveLength(0);
-    expect(controller.getState()).toEqual({ level: 2, levelLock: null });
+    expect(controller.getState()).toEqual({ level: 2, levelLock: null, maxLevel: 4 });
   });
 
   it('古いlevelDataを再利用せず、以後のレベル切替でも新しいlevelDataだけが使われる(レイアウトキャッシュ破棄)', () => {
@@ -306,18 +321,101 @@ describe('createLevelController: updateModel(T4-1 ライブ編集)', () => {
     const { host, applyCalls } = createMockHost({ x: 50, y: 50 });
     const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
 
-    const controller = createLevelController(host, camera, model, levelData, 2);
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
 
     const newLevelData = new Map<Level, LevelData>(levelData);
     const newL3Elements: ExcalidrawElementSkeleton[] = [
       { id: 'edited-l3', type: 'rectangle', x: 0, y: 0, width: 1, height: 1 },
     ];
     newLevelData.set(3, { layout: levelData.get(3)!.layout!, elements: newL3Elements });
-    controller.updateModel(model, newLevelData);
+    controller.updateModel(model, newLevelData, 4);
 
     controller.lockTo(3);
 
     expect(applyCalls).toHaveLength(1);
     expect(applyCalls[0]?.elements).toEqual(newL3Elements);
+  });
+});
+
+describe('createLevelController: maxLevel(post-v1.0 L5〜L8拡張)', () => {
+  it('maxLevel=4のコントローラは、scaleを大きくしてもL4を超えない(C4モードの回帰防止)', () => {
+    const { levelData, model } = createLevelData();
+    const { host, applyCalls } = createMockHost({ x: 50, y: 50 });
+    const { camera, emit } = createMockCamera({
+      scrollX: 0,
+      scrollY: 0,
+      zoom: 0.6,
+      z0: 0.6,
+      scale: 1,
+    });
+
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
+    emit({ scrollX: 0, scrollY: 0, zoom: 60, z0: 0.6, scale: 100 });
+
+    expect(controller.getState().level).toBe(4);
+    expect(controller.getState().maxLevel).toBe(4);
+    expect(applyCalls[applyCalls.length - 1]?.elements).toEqual(elementsFor(4));
+  });
+
+  it('maxLevel=8のコントローラは、scaleに応じてL5以上へ上がる', () => {
+    const { levelData, model } = createLevelDataExtended();
+    const { host, applyCalls } = createMockHost({ x: 50, y: 50 });
+    const { camera, emit } = createMockCamera({
+      scrollX: 0,
+      scrollY: 0,
+      zoom: 0.6,
+      z0: 0.6,
+      scale: 1,
+    });
+
+    const controller = createLevelController(host, camera, model, levelData, 2, 8);
+    // s=6.75 → L2からL6まで連鎖上昇(閾値0.75/1.5/3.0/4.5/6.75を順に跨ぐ)。
+    emit({ scrollX: 0, scrollY: 0, zoom: 6.75, z0: 0.6, scale: 6.75 });
+
+    expect(controller.getState().level).toBe(6);
+    expect(applyCalls[applyCalls.length - 1]?.elements).toEqual(elementsFor(6));
+  });
+
+  it('getState().maxLevelが初期値を正しく返す', () => {
+    const { levelData, model } = createLevelDataExtended();
+    const { host } = createMockHost({ x: 50, y: 50 });
+    const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
+
+    const controller4 = createLevelController(host, camera, model, levelData, 2, 4);
+    expect(controller4.getState().maxLevel).toBe(4);
+
+    const controller8 = createLevelController(host, camera, model, levelData, 2, 8);
+    expect(controller8.getState().maxLevel).toBe(8);
+  });
+
+  it('updateModel後、getState().maxLevelが新しい値を返す', () => {
+    const { levelData, model } = createLevelDataExtended();
+    const { host } = createMockHost({ x: 50, y: 50 });
+    const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
+
+    const controller = createLevelController(host, camera, model, levelData, 2, 4);
+    controller.updateModel(model, levelData, 8);
+
+    expect(controller.getState().maxLevel).toBe(8);
+  });
+
+  it('L7表示中にmaxLevel=4へ下がるupdateModelを呼ぶと、level/levelLockがmaxLevelへ丸められ、host.updateElementsのみが呼ばれる(applyLevelSwitchは呼ばれない)', () => {
+    const { levelData, model } = createLevelDataExtended();
+    const { host, applyCalls, updateElementsCalls } = createMockHost({ x: 50, y: 50 });
+    const { camera } = createMockCamera({ scrollX: 0, scrollY: 0, zoom: 0.6, z0: 0.6, scale: 1 });
+
+    const controller = createLevelController(host, camera, model, levelData, 2, 8);
+    controller.lockTo(7);
+    expect(controller.getState()).toEqual({ level: 7, levelLock: 7, maxLevel: 8 });
+    expect(applyCalls).toHaveLength(1);
+
+    controller.updateModel(model, levelData, 4);
+
+    expect(controller.getState()).toEqual({ level: 4, levelLock: 4, maxLevel: 4 });
+    // 丸めも「編集の結果」なのでapplyLevelSwitch(アンカー保存経路)は呼ばれない。呼び出し回数は
+    // lockTo(7)時点の1回のまま増えない。
+    expect(applyCalls).toHaveLength(1);
+    expect(updateElementsCalls).toHaveLength(1);
+    expect(updateElementsCalls[0]).toEqual(levelData.get(4)?.elements);
   });
 });
