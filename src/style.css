@@ -172,3 +172,11 @@ body {
   color: #fff;
   font-weight: bold;
 }
+
+/* Issue #2対応: 軸モード表示(`%% MODE:`宣言の表示のみ)。`#level-status`には専用ルールが
+   無く#toolbarの既定文字色・サイズをそのまま使っているため、それに揃えつつ主張しすぎない
+   よう控えめな色に留める(目立たせない、という指示どおり)。 */
+#axis-mode {
+  font-size: 13px;
+  color: #666;
+}

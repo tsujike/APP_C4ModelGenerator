@@ -35,6 +35,15 @@ import type { ParseIssue } from './types';
  */
 const LEVEL_MARKER_PATTERN = /^%%\s*L([1-8])\s*$/i;
 
+/**
+ * 「名前付きマーカーもどき」の行のパターン(`findNamedMarkerLikeLines`専用)。
+ * `LEVEL_MARKER_PATTERN` とほぼ同じだが、`L1`の直後に単語境界を置いたうえで
+ * 「空白ゼロ個以上のあとに非空白文字が続く」ことを要求する。これにより
+ * `%%L1: 名前` / `%%L1 名前` / `%% L2 - 詳細` のような「マーカーに見えるがコメント扱いに
+ * なる行」を拾う一方、`%%L1x` のように続きが単語文字の行(=そもそも別物)は拾わない。
+ */
+const NAMED_MARKER_LIKE_PATTERN = /^%%\s*L([1-8])\b\s*\S/i;
+
 /** 1レベル分の登録内容。 */
 export interface MermaidLevelEntry {
   /** そのレベルに登録されたMermaidソース(マーカー行自体は含まない)。 */
@@ -43,11 +52,35 @@ export interface MermaidLevelEntry {
   markerLine: number;
 }
 
+/**
+ * L1〜L8という軸そのものが何を意味するかの宣言。
+ * - `zoom`: レベルが上がるほど詳細度が上がる(ズームイン)。
+ * - `views`: 各レベルが別々の視点(切り口)を並べたもの。
+ * - `reader`: レベルごとに読者(対象者)が変わる。
+ *
+ * **表示のみで挙動は一切変えない**(Kenny決定: 挙動変更は実際に使ってから)。
+ * `%% MODE: <値>` 宣言はUI上のラベル表示などに使われるだけで、レベルの分割・切替・
+ * 未登録レベルの扱いといった既存の挙動には一切影響しない。
+ */
+export type AxisMode = 'zoom' | 'views' | 'reader';
+
+/** `%% MODE:` 宣言が無い場合に使う既定値。 */
+export const DEFAULT_AXIS_MODE: AxisMode = 'zoom';
+
 export interface MermaidLevelsResult {
   /** 登録があったレベルのみを含む。未登録レベルはキー自体が存在しない。 */
   levels: Map<Level, MermaidLevelEntry>;
   issues: ParseIssue[];
+  /** `%% MODE:` 宣言から解析した軸モード。宣言が無ければ `DEFAULT_AXIS_MODE`。 */
+  axisMode: AxisMode;
 }
+
+/**
+ * 軸モード宣言行のパターン。`%% MODE: <値>` の形。`%%` と `MODE` の間、`MODE` と `:` の間、
+ * `:` と値の間の空白はそれぞれ任意。大文字小文字は区別しない
+ * (`%% MODE: views` / `%%MODE:reader` / `%% mode: ZOOM` はすべて有効)。
+ */
+const MODE_LINE_PATTERN = /^%%\s*MODE\s*:\s*(.*)$/i;
 
 /**
  * ソースがMermaidモードかどうかを判定する。レベルマーカー行が1つでもあればMermaidモード。
@@ -141,15 +174,23 @@ export function detectMarkerlessMermaidLine(source: string): number | undefined 
  * `%%L1`〜`%%L8` マーカーでソースを最大8つのMermaidソースへ分割する。
  *
  * - 最初のマーカーより前に書かれた非空行は warning にして無視する(どのレベルにも属さないため)。
+ *   ただし `%% MODE:` 宣言行はこの警告の対象から除外する(MODEはソース先頭に書くのが標準的な
+ *   置き場所のため)。
  * - 同じレベルのマーカーが複数回現れた場合は初出を採用し、2つ目以降を warning にして無視する
  *   (alias重複時に初出を採用する `model/build.ts` の既存規約に揃える)。
  * - マーカー直後の本文が空(次のマーカーまで非空行が無い)場合は warning にし、そのレベルは
  *   未登録として扱う(=何も表示しない)。
+ * - `%% MODE: <値>` 宣言行があれば `axisMode` を解析する。複数ある場合は最初の1つが勝ち、
+ *   未知の値は warning にして `DEFAULT_AXIS_MODE` として扱う。レベル本文の中に現れた
+ *   MODE行は、これまでどおり本文にそのまま残す(取り除く処理は行わない)。
  */
 export function splitMermaidLevels(source: string): MermaidLevelsResult {
   const rawLines = source.split(/\r\n|\r|\n/);
   const levels = new Map<Level, MermaidLevelEntry>();
   const issues: ParseIssue[] = [];
+  let axisMode: AxisMode = DEFAULT_AXIS_MODE;
+  /** 最初のMODE行にまだ到達していないか。2つ目以降のMODE行を警告するために使う。 */
+  let sawModeLine = false;
 
   /** 現在収集中のレベル。null = まだ最初のマーカーに到達していない。 */
   let currentLevel: Level | null = null;
@@ -175,11 +216,44 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
   for (let i = 0; i < rawLines.length; i++) {
     const lineNumber = i + 1;
     const rawLine = rawLines[i] ?? '';
-    const matched = LEVEL_MARKER_PATTERN.exec(rawLine.trim());
+    const trimmedLine = rawLine.trim();
+
+    const modeMatched = MODE_LINE_PATTERN.exec(trimmedLine);
+    if (modeMatched !== null) {
+      const rawValue = (modeMatched[1] ?? '').trim();
+      if (!sawModeLine) {
+        sawModeLine = true;
+        const normalized = rawValue.toLowerCase();
+        if (normalized === 'zoom' || normalized === 'views' || normalized === 'reader') {
+          axisMode = normalized;
+        } else {
+          issues.push({
+            severity: 'warning',
+            line: lineNumber,
+            message: `未知のMODE「${rawValue}」です。zoom / views / reader のいずれかを指定してください(zoomとして扱います)。`,
+          });
+        }
+      } else {
+        issues.push({
+          severity: 'warning',
+          line: lineNumber,
+          message: `MODE行が複数あります。最初の1つ(${axisMode})を使います。`,
+        });
+      }
+
+      if (currentLevel === null) {
+        // 最初のレベルマーカーより前のMODE行は「マーカーより前」警告の対象外(標準的な置き場所のため)。
+        continue;
+      }
+      currentLines.push(rawLine);
+      continue;
+    }
+
+    const matched = LEVEL_MARKER_PATTERN.exec(trimmedLine);
 
     if (matched === null) {
       if (currentLevel === null) {
-        if (rawLine.trim() !== '') {
+        if (trimmedLine !== '') {
           issues.push({
             severity: 'warning',
             line: lineNumber,
@@ -215,7 +289,41 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
   }
 
   flush();
-  return { levels, issues };
+  return { levels, issues, axisMode };
+}
+
+/** `findNamedMarkerLikeLines`が返す1件。 */
+export interface NamedMarkerLikeLine {
+  /** 1始まりの行番号。 */
+  line: number;
+  /** その行が指しているように見えるレベル。 */
+  level: Level;
+}
+
+/**
+ * 名前付きマーカーもどきの行(`%%L1: 名前` のような、レベルマーカーに見えるが
+ * `LEVEL_MARKER_PATTERN` にはマッチしない行)を検出する。
+ *
+ * FR-7.2 どおりマーカーは単独行のみ。`%%L1: 名前` はコメント扱いになり、そのレベルの図が
+ * 丸ごと落ちるという分かりにくい失敗になるため、呼び出し側(main.ts)が警告を出せるように
+ * 行を返す。この関数自体は挙動を変えない(`LEVEL_MARKER_PATTERN` を変更せず、
+ * `%%L1: 名前` を正規のマーカーとして受理することもしない)。
+ */
+export function findNamedMarkerLikeLines(source: string): readonly NamedMarkerLikeLine[] {
+  const rawLines = source.split(/\r\n|\r|\n/);
+  const result: NamedMarkerLikeLine[] = [];
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const trimmedLine = (rawLines[i] ?? '').trim();
+    if (LEVEL_MARKER_PATTERN.test(trimmedLine)) continue;
+
+    const matched = NAMED_MARKER_LIKE_PATTERN.exec(trimmedLine);
+    if (matched === null) continue;
+
+    result.push({ line: i + 1, level: Number(matched[1]) as Level });
+  }
+
+  return result;
 }
 
 // ---- Issue #3対応: Mermaid本家との解釈差分を埋めるための補助関数 ----

@@ -3,6 +3,7 @@ import {
   detectMarkerlessMermaidLine,
   extractMermaidTitle,
   findCollapsedShapeTokens,
+  findNamedMarkerLikeLines,
   isMermaidModeSource,
   splitMermaidLevels,
 } from '../../src/parser/mermaidLevels';
@@ -227,6 +228,91 @@ describe('post-v1.0: L5〜L8マーカー拡張(Mermaidモード専用)', () => {
     expect(isMermaidModeSource('%% L8\nflowchart TD')).toBe(true);
     expect(isMermaidModeSource('  %%l5  \nflowchart TD')).toBe(true);
     expect(isMermaidModeSource('%%\tL6\nflowchart TD')).toBe(true);
+  });
+});
+
+describe('splitMermaidLevels: %% MODE: 軸モード宣言', () => {
+  it('defaults to zoom when there is no MODE declaration', () => {
+    const { axisMode, issues } = splitMermaidLevels('%%L1\nflowchart TD');
+
+    expect(axisMode).toBe('zoom');
+    expect(issues).toEqual([]);
+  });
+
+  it('parses views / reader / zoom, tolerant of spacing and case', () => {
+    expect(splitMermaidLevels('%% MODE: views\n%%L1\nflowchart TD').axisMode).toBe('views');
+    expect(splitMermaidLevels('%%MODE:reader\n%%L1\nflowchart TD').axisMode).toBe('reader');
+    expect(splitMermaidLevels('%% mode: ZOOM\n%%L1\nflowchart TD').axisMode).toBe('zoom');
+  });
+
+  it('warns and falls back to zoom for an unknown MODE value', () => {
+    const source = ['%% MODE: foo', '%%L1', 'flowchart TD'].join('\n');
+
+    const { axisMode, issues } = splitMermaidLevels(source);
+
+    expect(axisMode).toBe('zoom');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('warning');
+    expect(issues[0]?.line).toBe(1);
+    expect(issues[0]?.message).toContain('foo');
+  });
+
+  it('keeps the first MODE declaration and warns about later ones', () => {
+    const source = ['%% MODE: views', '%% MODE: reader', '%%L1', 'flowchart TD'].join('\n');
+
+    const { axisMode, issues } = splitMermaidLevels(source);
+
+    expect(axisMode).toBe('views');
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.severity).toBe('warning');
+    expect(issues[0]?.line).toBe(2);
+  });
+
+  it('does not warn about "before the first marker" for a MODE line placed there', () => {
+    const source = ['%% MODE: views', '%%L1', 'flowchart TD'].join('\n');
+
+    const { issues } = splitMermaidLevels(source);
+
+    expect(issues).toEqual([]);
+  });
+
+  it('keeps a MODE line found inside a level body as part of that body', () => {
+    const source = ['%%L1', 'flowchart TD', '%% MODE: views', '  A --> B'].join('\n');
+
+    const { levels, axisMode, issues } = splitMermaidLevels(source);
+
+    expect(axisMode).toBe('views');
+    expect(issues).toEqual([]);
+    expect(levels.get(1)?.text).toBe('flowchart TD\n%% MODE: views\n  A --> B');
+  });
+});
+
+describe('findNamedMarkerLikeLines', () => {
+  it('detects marker-like lines with a colon or trailing text', () => {
+    const source = ['%%L1: 理想の姿', 'flowchart TD'].join('\n');
+    expect(findNamedMarkerLikeLines(source)).toEqual([{ line: 1, level: 1 }]);
+  });
+
+  it('detects "%%L1 理想の姿" and "%% L2 - 詳細"', () => {
+    expect(findNamedMarkerLikeLines('%%L1 理想の姿')).toEqual([{ line: 1, level: 1 }]);
+    expect(findNamedMarkerLikeLines('%% L2 - 詳細')).toEqual([{ line: 1, level: 2 }]);
+  });
+
+  it('does not flag a real marker line', () => {
+    expect(findNamedMarkerLikeLines('%%L1')).toEqual([]);
+    expect(findNamedMarkerLikeLines('%%  l1  ')).toEqual([]);
+  });
+
+  it('does not flag a line where the digit is followed by a word character', () => {
+    expect(findNamedMarkerLikeLines('%%L1x')).toEqual([]);
+  });
+
+  it('reports every matching line with its 1-based line number', () => {
+    const source = ['%%L1: A', 'flowchart TD', '%%L2: B'].join('\n');
+    expect(findNamedMarkerLikeLines(source)).toEqual([
+      { line: 1, level: 1 },
+      { line: 3, level: 2 },
+    ]);
   });
 });
 

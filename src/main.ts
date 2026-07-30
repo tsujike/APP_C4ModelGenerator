@@ -17,14 +17,17 @@ import {
   detectMarkerlessMermaidLine,
   extractMermaidTitle,
   findCollapsedShapeTokens,
+  findNamedMarkerLikeLines,
   isMermaidModeSource,
   splitMermaidLevels,
+  type AxisMode,
 } from './parser/mermaidLevels';
 import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
 import { ecSiteSample } from './samples/ec-site';
 import { internetBankingSample } from './samples/internet-banking';
 import { mermaidLevelsSample } from './samples/mermaid-levels';
+import { viewsProfileSample } from './samples/views-profile';
 import {
   createEditor,
   loadPersistedSource,
@@ -58,6 +61,11 @@ const SAMPLES: ReadonlyArray<{ id: string; label: string; source: string }> = [
   { id: 'internet-banking', label: 'インターネットバンキング', source: internetBankingSample },
   { id: 'ec-site', label: 'ECサイト', source: ecSiteSample },
   { id: 'mermaid-levels', label: 'Mermaid(レベル別)', source: mermaidLevelsSample },
+  {
+    id: 'views-profile',
+    label: 'プロファイル例(採用プロセス/ビュー軸)',
+    source: viewsProfileSample,
+  },
 ];
 
 /** C4モードでモデルを持たないMermaidモード用の空モデル(levelController.updateModelの引数用)。 */
@@ -93,6 +101,7 @@ async function bootstrap(): Promise<void> {
 
   const built = await buildFromSource(editor.getValue());
   issuesPanel.update(built.issues);
+  renderAxisMode(built.axisMode);
   // T5-1: エクスポートボタンは「クリック時点で表示中のレベルの全要素」を必要とするため、
   // 編集のたびに再構築される最新のlevelDataを常に読めるよう`let`にする(このファイル冒頭の
   // 申し送りどおり、以前は`const`でbootstrap内に閉じていたが、それだと再解析後の最新版を
@@ -156,6 +165,7 @@ async function reparseAndRerender(
 ): Promise<void> {
   const built = await buildFromSource(source);
   issuesPanel.update(built.issues);
+  renderAxisMode(built.axisMode);
   const levelData = built.levelData;
   levelController.updateModel(built.model, levelData, built.maxLevel);
   // T5-1: エクスポートボタンが常に最新のlevelDataを読めるよう、bootstrap側の`let levelData`を
@@ -328,6 +338,12 @@ interface BuildResult {
   levelData: Map<Level, LevelData>;
   /** そのモードで到達可能な最大レベル。C4モードは4、Mermaidモードは8(levelController.ts参照)。 */
   maxLevel: Level;
+  /**
+   * Issue #2対応: `%% MODE:` 宣言から解析した軸モード(`splitMermaidLevels`参照)。
+   * C4モードには軸モードの宣言が無いため未定義(`exactOptionalPropertyTypes`のため、
+   * C4モード側の戻り値ではこのキー自体を省略する。`undefined`を明示代入しない)。
+   */
+  axisMode?: AxisMode;
 }
 
 /**
@@ -339,8 +355,25 @@ interface BuildResult {
  * 設計判断(申し送り): モード分岐をこの1関数に閉じることで、C4モードの経路
  * (buildModel → project → layout → toExcalidraw)には一切手を入れていない。既存の全テスト・
  * 全受入基準はC4モードの経路をそのまま検証し続ける。
+ *
+ * Issue #2対応: 「名前付きマーカーもどきの行」(`%%L1: 名前`等)の警告は、C4モード・Mermaidモード
+ * どちらの経路でも共通して必要(名前付きマーカーだけの文書はマーカーとして認識されないため
+ * `isMermaidModeSource`がfalseになりC4モードに落ちる)。そのためモード分岐の本体を
+ * `buildFromSourceInner`へ切り出し、この関数ではその前後で共通のissue追加だけを行う。
  */
 async function buildFromSource(source: string): Promise<BuildResult> {
+  const built = await buildFromSourceInner(source);
+  for (const { line, level } of findNamedMarkerLikeLines(source)) {
+    built.issues.push({
+      severity: 'warning',
+      line,
+      message: `%%L${String(level)} の後ろに文字が続くため、この行はレベルマーカーとして扱いません。マーカーは %%L${String(level)} だけの行にしてください。レベルに名前を付けたいときは、その図の先頭に --- / title: 名前 / --- を書きます。`,
+    });
+  }
+  return built;
+}
+
+async function buildFromSourceInner(source: string): Promise<BuildResult> {
   if (isMermaidModeSource(source)) {
     return buildMermaidLevelData(source);
   }
@@ -360,6 +393,8 @@ async function buildFromSource(source: string): Promise<BuildResult> {
     });
   }
 
+  // C4モードには軸モードの宣言(`%% MODE:`)が無いため、axisModeキー自体を省略する
+  // (exactOptionalPropertyTypesのため`undefined`を明示代入しない。BuildResultのJSDoc参照)。
   return { model, issues, levelData: await buildLevelData(model), maxLevel: 4 };
 }
 
@@ -376,7 +411,7 @@ async function buildFromSource(source: string): Promise<BuildResult> {
  * 8レベル分の変換は`Promise.all`で並行に走らせる(C4モードの`buildLevelData`と同じ形)。
  */
 async function buildMermaidLevelData(source: string): Promise<BuildResult> {
-  const { levels, issues } = splitMermaidLevels(source);
+  const { levels, issues, axisMode } = splitMermaidLevels(source);
 
   const entries = await Promise.all(
     ALL_LEVELS.map(async (level): Promise<readonly [Level, LevelData]> => {
@@ -422,7 +457,7 @@ async function buildMermaidLevelData(source: string): Promise<BuildResult> {
     }),
   );
 
-  return { model: EMPTY_MODEL, issues, levelData: new Map(entries), maxLevel: 8 };
+  return { model: EMPTY_MODEL, issues, levelData: new Map(entries), maxLevel: 8, axisMode };
 }
 
 /**
@@ -534,6 +569,41 @@ function setupCamera(host: ExcalidrawHost): CameraController {
   // 起動直後に一度だけFitし、その直後のzoom.valueをz0として確定する(設計書§8.1)。
   camera.fitAndEstablishZ0();
   return camera;
+}
+
+/**
+ * Issue #2対応: `%% MODE:` 宣言(`axisMode`)をツールバーへ表示するだけの関数。
+ * L1→L8という軸そのものが何を意味するかの宣言を表示するだけで、**挙動は一切変えない**
+ * (Kenny決定: `views` でもオートズームは切らない。レベル切替・LOD判定等の既存挙動は
+ * `axisMode`を一切参照しない)。
+ *
+ * `AxisMode`に値が増えたときに気づけるよう、switch文は各ケースを明示し、default節では
+ * `axisMode`を`never`として扱う(網羅性チェック)。
+ */
+function renderAxisMode(axisMode: AxisMode | undefined): void {
+  const el = document.getElementById('axis-mode');
+  if (el === null) return;
+
+  if (axisMode === undefined) {
+    el.textContent = '';
+    return;
+  }
+
+  switch (axisMode) {
+    case 'zoom':
+      el.textContent = '軸: ズーム(詳細度)';
+      return;
+    case 'views':
+      el.textContent = '軸: ビュー(視点)';
+      return;
+    case 'reader':
+      el.textContent = '軸: 読者(対象者)';
+      return;
+    default: {
+      const exhaustiveCheck: never = axisMode;
+      throw new Error(`未知のaxisMode: ${String(exhaustiveCheck)}`);
+    }
+  }
 }
 
 /**
