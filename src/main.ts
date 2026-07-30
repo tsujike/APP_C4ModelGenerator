@@ -1,4 +1,5 @@
 import './style.css';
+import type { ExcalidrawElementSkeleton } from '@excalidraw/excalidraw/data/transform';
 import { createCameraController, type CameraController } from './camera/camera';
 import {
   createLevelController,
@@ -14,6 +15,8 @@ import { project } from './model/project';
 import type { C4Model, Level } from './model/types';
 import {
   detectMarkerlessMermaidLine,
+  extractMermaidTitle,
+  findCollapsedShapeTokens,
   isMermaidModeSource,
   splitMermaidLevels,
 } from './parser/mermaidLevels';
@@ -381,7 +384,31 @@ async function buildMermaidLevelData(source: string): Promise<BuildResult> {
       if (entry === undefined) return [level, { elements: [] }];
       try {
         const { elements, files } = await convertMermaidToElements(entry.text);
-        return [level, { elements, ...(files !== undefined ? { files } : {}) }];
+
+        // Issue #3対応: 「ネイティブ変換経路かどうか」は`files === undefined`で判定する
+        // (excal/mermaid.tsのJSDocどおり、ラスタ画像フォールバック時のみ`files`が定義される)。
+        // ネイティブ変換経路はMermaid.jsに描画させずレイアウトのみ流用するため、mermaid本家の
+        // 見た目との差分(frontmatterのtitleが消える/一部の図形が長方形に丸められる)が生じる。
+        // ラスタ画像フォールバック経路はmermaid自身がSVGを描くため、この差分は発生しない
+        // (指揮者の実測: title有りだとSVG高さが119→159に増え、形状は忠実に描かれる)。
+        // よって以下の2つの補完は`files === undefined`のときだけ行う。
+        const isNativeConversion = files === undefined;
+        const elementsWithTitle = isNativeConversion
+          ? appendMermaidTitleElement(elements, entry.text, level)
+          : elements;
+
+        if (isNativeConversion) {
+          const collapsedShapes = findCollapsedShapeTokens(entry.text);
+          if (collapsedShapes.length > 0) {
+            issues.push({
+              severity: 'warning',
+              line: entry.markerLine,
+              message: `%%L${String(level)} の ${collapsedShapes.join('、')} はExcalidrawに無い図形のため長方形で描画しました(subgraphを使うとMermaidが描いた図をそのまま画像として貼るため、形状は保たれます)`,
+            });
+          }
+        }
+
+        return [level, { elements: elementsWithTitle, ...(files !== undefined ? { files } : {}) }];
       } catch (error) {
         issues.push({
           severity: 'error',
@@ -396,6 +423,48 @@ async function buildMermaidLevelData(source: string): Promise<BuildResult> {
   );
 
   return { model: EMPTY_MODEL, issues, levelData: new Map(entries), maxLevel: 8 };
+}
+
+/**
+ * Issue #3対応(A): frontmatterの`title:`をネイティブ変換経路でも図の上に表示するため、
+ * タイトルのtext要素を1つ変換結果の末尾に足す。`extractMermaidTitle`がタイトルを返さない、
+ * または変換結果が空(0要素)の場合は何もせず`elements`をそのまま返す(足す先の基準座標が
+ * 無いため)。
+ *
+ * 位置は「変換後の要素群のバウンディングボックスの左上」を基準にその上に置く。バウンディング
+ * ボックスは`x`/`y`が数値である要素だけを対象に最小値のみで求める(`ExcalidrawElementSkeleton`は
+ * `frame`等`x`/`y`を持たない種別もUnionに含むため型ガードが要る。また最大値〈右下〉は本要件では
+ * 不要なため求めない)。
+ */
+function appendMermaidTitleElement(
+  elements: readonly ExcalidrawElementSkeleton[],
+  sourceText: string,
+  level: Level,
+): readonly ExcalidrawElementSkeleton[] {
+  const title = extractMermaidTitle(sourceText);
+  if (title === undefined || elements.length === 0) return elements;
+
+  let minX: number | undefined;
+  let minY: number | undefined;
+  for (const el of elements) {
+    if ('x' in el && typeof el.x === 'number')
+      minX = minX === undefined ? el.x : Math.min(minX, el.x);
+    if ('y' in el && typeof el.y === 'number')
+      minY = minY === undefined ? el.y : Math.min(minY, el.y);
+  }
+  if (minX === undefined || minY === undefined) return elements;
+
+  const titleElement: ExcalidrawElementSkeleton = {
+    id: `mermaid-title-L${String(level)}`,
+    type: 'text',
+    x: minX,
+    y: minY - 44,
+    text: title,
+    fontSize: 28,
+    textAlign: 'left',
+    strokeColor: '#1e1e1e',
+  };
+  return [...elements, titleElement];
 }
 
 /** 外部ライブラリ境界のcatch節(`unknown`)から表示用メッセージを取り出す(実装指示書§4: any禁止)。 */

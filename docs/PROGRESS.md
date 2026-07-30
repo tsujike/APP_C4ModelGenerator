@@ -791,3 +791,62 @@
   Playwrightの実ブラウザでツールバーに「Mermarium」が表示されること、`document.title`が
   「Mermarium(マーマリウム)」であること、localStorage移行の回帰が無い(旧キーで保存したソースが
   リロード後も復元される)ことを確認(`PAGE_ERRORS=[]`)。
+
+## 2026-07-30 Issue #3 Mermaidモードの記法対応差分(`<br/>` / title / 形状 / classDef)
+
+- **経緯**: GitHub Issue #3「Mermaidモードで解釈される記法の範囲が本家Mermaidと異なる
+  (title / 形状 / classDef が反映されない)」。Kennyの「Mermariumの強みは素のMermaid記法をそのまま
+  書けること」という価値判断に基づく報告。
+- **調査結果: Issueの前提は3点のうち2点が誤りで、真の原因は`<br/>`だった**(指揮者がライブラリ境界の
+  プローブとPlaywrightの実表示で実測)。
+  1. **`classDef` / `class` / `style` は両経路で正しく効いている**(Issueの指摘は誤り)。ライブラリ返却値で
+     `backgroundColor: "#EDE7F6"` / `strokeColor: "#5E35B1"` を確認し、実画面でも着色を目視確認した。
+  2. **`title:`が消えるのはネイティブ変換経路だけ**。ラスタ画像フォールバック経路はmermaid自身が
+     SVG内にタイトルを描くため元から表示されている(実測: title有りでSVG高さ119.3→159.4)。
+  3. **真の原因は`<br/>`で、経路ごとに別の壊れ方をしていた**。
+     - ネイティブ変換経路: ラベルが `一行目<br>二行目` という**文字列のまま**表示される
+       (flowchartは`<br>`へ正規化、sequenceDiagramは`<br/>`のまま。エッジラベルも同様)。
+     - ラスタ画像フォールバック経路: mermaidが`<foreignObject>`内へ**閉じていない`<br>`**を出力するため
+       SVGがXMLとして不正になり、Chromiumの`<img>`が読み込みを拒否して**図全体が「壊れた画像」アイコン**に
+       なっていた(下部パネルは「問題なし」のままなので原因に気づけない)。DOMParserのエラーは
+       `Opening and ending tag mismatch: br line 1 and p`。`<img>`読み込みプローブで`<br>`を含む場合のみ
+       ERRORになることを切り分け済み。
+  4. **形状が長方形へ丸められるのはExcalidrawの原理的限界**。Excalidrawが持つ閉じた図形は
+     rectangle / ellipse / diamond の3種類だけ。実測した全対応: rect→rectangle、round `()`→rectangle+
+     roundness{type:3}、stadium `([])`→同(近似)、subroutine `[[]]` / cylinder `[()]` / asym `>]` /
+     hexagon `{{}}` / parallelogram `[//]`・`[\\]` / trapezoid `[/\]`・`[\/]`→素のrectangle、
+     circle `(())`→ellipse、doublecircle→ellipse2枚、rhombus `{}`→diamond。
+- **実装した対応(4件)**:
+  1. `src/excal/mermaid.ts` — ライブラリ境界で`<br>`を後処理で修復。ネイティブ変換経路は`label.text`の
+     `<br>`類を`\n`へ置換(`fixBrInLabel`)、ラスタ画像経路はSVGのdataURLをUTF-8のまま復号して
+     閉じていない`<br>`を`<br/>`へ直し再エンコードする(`fixUnclosedBrInFiles`)。
+  2. `src/parser/mermaidLevels.ts` — DOM非依存の純関数を2つ追加。`extractMermaidTitle`(frontmatterの
+     `title:`を取り出す)と`findCollapsedShapeTokens`(長方形へ丸められる記法を検出する)。テスト24件追加。
+  3. `src/main.ts` — ネイティブ変換経路のときだけ、タイトルのtext要素を図の左上に足し
+     (`appendMermaidTitleElement`)、丸められた形状を下部パネルへ警告として出す。
+  4. `README.md` — 新節「Mermaidモードの記法対応状況」に2経路の説明と12行の形状対応表を追加。
+- **設計判断(申し送り)**:
+  1. **`<br>`はソースの前処理ではなく変換結果の後処理で直す**。ソース側で置換するとmermaidの
+     レイアウト計算そのものが変わって行の高さが狂う。実測でmermaidは`<br/>`込みで既に2行分の箱を
+     確保している(h=90 vs 無しでh=60)ため、後処理で`\n`にしても文字がはみ出さない。
+  2. **「ネイティブ変換経路か」の判定は`files === undefined`で行う**。`excal/mermaid.ts`のJSDocどおり、
+     `files`が定義されるのはラスタ画像フォールバックのときだけ。この判定でtitle補完と形状警告の
+     両方をネイティブ経路に限定している(ラスタ経路はmermaid本家が忠実に描くので補完も警告も不要かつ有害)。
+  3. **形状の丸めは直さない**(直せない)。Excalidrawに図形が無いため、警告で知らせて`subgraph`による
+     ラスタ経路への回避策をREADMEに書くのが最単純解。図形の自作(線の組み合わせでの近似)は
+     スコープ外とした。
+  4. **READMEの「外部CDNにも依存しません」という記述は誤りだったので削除した**。Excalifontは実行時に
+     `https://esm.sh/@excalidraw/excalidraw@0.18.1/dist/prod/fonts/...` から取得される
+     (ネットワークの無い環境では`ERR_TUNNEL_CONNECTION_FAILED`になり手描き風フォントだけが落ちる)。
+     真にCDN非依存にするならフォントのローカル同梱が別途必要で、これは未対応(申し送り)。
+- **検証結果**: `npm test` 287件すべてpass(24ファイル)、`tsc --noEmit`・`npm run lint`・`npm run build`
+  すべて成功。Playwrightの実ブラウザで次を確認(`PAGE_ERRORS=[]`)。
+  (a) ネイティブ変換経路(`%%L7`のflowchart)でラベルの`<br/>`が実際の改行として2行で表示され、
+     frontmatterの`title:`が図の上に表示され、classDefの紫の塗りも効いている。
+  (b) 修正前は「壊れた画像」アイコンだったラスタ画像フォールバック(`subgraph`+`<br/>`+`classDef`)が、
+     frontmatter有り・無しの両方で図として正しく描画される(平行四辺形・シリンダの形状も忠実)。
+  (c) 形状警告が下部パネルへ出る(`%%L6 の シリンダ [(...)]、平行四辺形 [/.../] はExcalidrawに無い
+     図形のため長方形で描画しました…`)。
+  (d) 回帰なし: C4モードのL1〜L4、サンプル「Mermaid(レベル別)」のL1〜L8すべてが従来どおり描画され、
+     Issuesパネルは全レベルで「問題なし」(ラスタ経路にあたる`%%L2`のcylinderへ誤って警告が出ない
+     ことも確認)、localStorageキーも変わらずリロード復元が効く。

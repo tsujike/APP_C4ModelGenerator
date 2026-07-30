@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   detectMarkerlessMermaidLine,
+  extractMermaidTitle,
+  findCollapsedShapeTokens,
   isMermaidModeSource,
   splitMermaidLevels,
 } from '../../src/parser/mermaidLevels';
@@ -303,5 +305,169 @@ describe('detectMarkerlessMermaidLine', () => {
 
   it('handles CRLF sources', () => {
     expect(detectMarkerlessMermaidLine('\r\nsequenceDiagram\r\n  A->>B: x')).toBe(2);
+  });
+});
+
+// Issue #3対応: Mermaidモードで解釈される記法の範囲が本家Mermaidと異なる点を利用者に
+// 案内するための2関数(extractMermaidTitle / findCollapsedShapeTokens)のテスト。
+describe('extractMermaidTitle', () => {
+  it('extracts a plain title from frontmatter', () => {
+    const source = ['---', 'title: 図のタイトル', '---', 'flowchart TD', '  A --> B'].join('\n');
+    expect(extractMermaidTitle(source)).toBe('図のタイトル');
+  });
+
+  it('trims surrounding whitespace', () => {
+    const source = ['---', 'title:   前後に空白  ', '---', 'flowchart TD'].join('\n');
+    expect(extractMermaidTitle(source)).toBe('前後に空白');
+  });
+
+  it('strips one pair of matching double quotes', () => {
+    const source = ['---', 'title: "引用符つき"', '---', 'flowchart TD'].join('\n');
+    expect(extractMermaidTitle(source)).toBe('引用符つき');
+  });
+
+  it('strips one pair of matching single quotes', () => {
+    const source = ['---', "title: '引用符つき'", '---', 'flowchart TD'].join('\n');
+    expect(extractMermaidTitle(source)).toBe('引用符つき');
+  });
+
+  it('returns undefined when the value is empty', () => {
+    expect(
+      extractMermaidTitle(['---', 'title:', '---', 'flowchart TD'].join('\n')),
+    ).toBeUndefined();
+    expect(
+      extractMermaidTitle(['---', 'title: ""', '---', 'flowchart TD'].join('\n')),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when there is no frontmatter at all', () => {
+    expect(extractMermaidTitle('flowchart TD\n  A --> B')).toBeUndefined();
+  });
+
+  it('ignores a --- block that is not at the very start of the source', () => {
+    const source = ['flowchart TD', '---', 'title: 後から出てくるので無効', '---'].join('\n');
+    expect(extractMermaidTitle(source)).toBeUndefined();
+  });
+
+  it('allows leading blank lines before the opening ---', () => {
+    const source = ['', '  ', '---', 'title: 先頭に空行あり', '---', 'flowchart TD'].join('\n');
+    expect(extractMermaidTitle(source)).toBe('先頭に空行あり');
+  });
+
+  it('returns undefined when the frontmatter is never closed', () => {
+    const source = ['---', 'title: 閉じていない', 'flowchart TD'].join('\n');
+    expect(extractMermaidTitle(source)).toBeUndefined();
+  });
+
+  it('ignores nested/indented title keys such as config.title', () => {
+    const source = [
+      '---',
+      'config:',
+      '  themeVariables:',
+      '    title: ネストしたタイトル',
+      '---',
+      'flowchart TD',
+    ].join('\n');
+    expect(extractMermaidTitle(source)).toBeUndefined();
+  });
+
+  it('picks the un-indented title even when other keys surround it', () => {
+    const source = [
+      '---',
+      'config:',
+      '  theme: dark',
+      'title: 本物のタイトル',
+      '---',
+      'flowchart TD',
+    ].join('\n');
+    expect(extractMermaidTitle(source)).toBe('本物のタイトル');
+  });
+
+  it('handles CRLF sources', () => {
+    const source = ['---', 'title: CRLF', '---', 'flowchart TD'].join('\r\n');
+    expect(extractMermaidTitle(source)).toBe('CRLF');
+  });
+});
+
+describe('findCollapsedShapeTokens', () => {
+  it('returns an empty array when no shape-losing notation is used', () => {
+    const source = ['flowchart TD', '  A --> B', '  B --> C[Rectangle]', '  C -.-> D'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual([]);
+  });
+
+  it('detects subroutine [[...]] nodes', () => {
+    const source = ['flowchart TD', '  A[[Subroutine]]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['サブルーチン [[...]]']);
+  });
+
+  it('detects cylinder [(...)] nodes', () => {
+    const source = ['flowchart TD', '  A[(DB)]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['シリンダ [(...)]']);
+  });
+
+  it('detects asymmetric >...] nodes without matching normal arrows', () => {
+    const source = ['flowchart TD', '  A --> B[Rectangle]', '  C>Flag]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['非対称 >...]']);
+  });
+
+  it('detects hexagon {{...}} nodes', () => {
+    const source = ['flowchart TD', '  A{{Hex}}'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['六角形 {{...}}']);
+  });
+
+  it('treats matching slant delimiters [/.../]  and [\\...\\] as parallelogram', () => {
+    const source = ['flowchart TD', '  A[/Para/]', '  B[\\Para2\\]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['平行四辺形 [/.../]']);
+  });
+
+  it('treats crossed slant delimiters [/...\\] and [\\.../] as trapezoid', () => {
+    const source = ['flowchart TD', '  A[/Trap\\]', '  B[\\Trap2/]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['台形 [/...\\]']);
+  });
+
+  it('distinguishes parallelogram from trapezoid when both appear', () => {
+    const source = ['flowchart TD', '  A[/Para/]', '  B[/Trap\\]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['平行四辺形 [/.../]', '台形 [/...\\]']);
+  });
+
+  it('deduplicates repeated occurrences of the same shape', () => {
+    const source = ['flowchart TD', '  A[[One]]', '  B[[Two]]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['サブルーチン [[...]]']);
+  });
+
+  it('returns tokens in the fixed order regardless of appearance order in the source', () => {
+    const source = [
+      'flowchart TD',
+      '  F[/Trap\\]',
+      '  E[/Para/]',
+      '  D{{Hex}}',
+      '  C>Flag]',
+      '  B[(DB)]',
+      '  A[[Sub]]',
+    ].join('\n');
+
+    expect(findCollapsedShapeTokens(source)).toEqual([
+      'サブルーチン [[...]]',
+      'シリンダ [(...)]',
+      '非対称 >...]',
+      '六角形 {{...}}',
+      '平行四辺形 [/.../]',
+      '台形 [/...\\]',
+    ]);
+  });
+
+  it('ignores %% comment lines', () => {
+    const source = ['%% A[[Not real]]', 'flowchart TD', '  B --> C'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual([]);
+  });
+
+  it('ignores content inside the leading frontmatter block', () => {
+    const source = ['---', 'title: A[[fake]]', '---', 'flowchart TD', '  B --> C'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual([]);
+  });
+
+  it('still detects shapes that follow a frontmatter block', () => {
+    const source = ['---', 'title: 図', '---', 'flowchart TD', '  A[[Sub]]'].join('\n');
+    expect(findCollapsedShapeTokens(source)).toEqual(['サブルーチン [[...]]']);
   });
 });

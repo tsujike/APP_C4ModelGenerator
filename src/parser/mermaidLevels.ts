@@ -217,3 +217,175 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
   flush();
   return { levels, issues };
 }
+
+// ---- Issue #3対応: Mermaid本家との解釈差分を埋めるための補助関数 ----
+//
+// 背景: 本アプリのMermaidモードはMermaid.jsに描画させず、レイアウト結果を
+// `@excalidraw/mermaid-to-excalidraw` 経由でExcalidraw要素に変換する(CLAUDE.md)。
+// そのため、Mermaid本家では解釈される記法の一部が「解釈はされるが最終的な見た目が
+// 本家と異なる」ことがある。以下の2関数は、その差分について呼び出し側(`excal/`側)が
+// 案内メッセージを出すための判定材料を提供するだけで、実際の変換・描画は一切行わない
+// (`parser/`はDOM非依存の純関数のみで構成する方針を維持)。
+
+/**
+ * frontmatterブロックの範囲。`bodyStart`〜`bodyEnd`(exclusive)がYAML本文、
+ * `afterEnd`が閉じの`---`の次の行。`extractMermaidTitle`と`findCollapsedShapeTokens`の
+ * 両方がこの検出ロジックを必要とするため共通化した(既存関数には手を入れていない)。
+ */
+interface FrontmatterRange {
+  bodyStart: number;
+  bodyEnd: number;
+  afterEnd: number;
+}
+
+/**
+ * ソース先頭のfrontmatterブロック(`---`行 〜 `---`行のYAML)を検出する。
+ * 前後の空行は許容するが、空行を除いた最初の行が`---`でなければfrontmatter無しとして扱う
+ * (先頭以外に現れる`---`は無視する、という仕様のため)。閉じの`---`が見つからない場合も
+ * frontmatter無し扱いとする(壊れたブロックを誤って本文と解釈しないため)。
+ */
+function findFrontmatterRange(lines: readonly string[]): FrontmatterRange | undefined {
+  let i = 0;
+  while (i < lines.length && (lines[i] ?? '').trim() === '') i++;
+  if (i >= lines.length || (lines[i] ?? '').trim() !== '---') return undefined;
+
+  const bodyStart = i + 1;
+  for (let j = bodyStart; j < lines.length; j++) {
+    if ((lines[j] ?? '').trim() === '---') {
+      return { bodyStart, bodyEnd: j, afterEnd: j + 1 };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 前後の空白をtrim済みの値から、対応する引用符1組だけを剥がす。`"a"` → `a`、`'a'` → `a`。
+ * 引用符が片側だけ・種類が不一致・2文字未満の場合はそのまま返す(壊れたYAMLを誤って
+ * 加工しないため)。
+ */
+function stripMatchingQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value.charAt(0);
+  const last = value.charAt(value.length - 1);
+  const isDoubleQuoted = first === '"' && last === '"';
+  const isSingleQuoted = first === "'" && last === "'";
+  return isDoubleQuoted || isSingleQuoted ? value.slice(1, -1) : value;
+}
+
+/**
+ * Mermaidのfrontmatter(ソース先頭の`---`〜`---`)内の`title:`の値を返す。
+ *
+ * 追加の経緯(Issue #3): 本家Mermaidはfrontmatterの`title`を図のタイトルとして解釈するが、
+ * 本アプリはMermaid.jsに描画させないため、`@excalidraw/mermaid-to-excalidraw`の変換結果には
+ * このタイトルが反映されない。呼び出し側(`excal/`)がこれを検出して「タイトルは無視されます」
+ * といった案内を出せるように、値の抽出だけをここで行う。
+ *
+ * - frontmatterはソースの先頭(前後の空行は許容)にある場合のみ有効。閉じられていない
+ *   frontmatter・先頭以外に現れる`---`は無視する。
+ * - `title:`は**インデントの無い行**のみを対象にする。`config:`配下などネストしたYAMLの
+ *   `title:`(インデント付き)は拾わない(最単純解釈: フルYAMLパーサは導入しない)。
+ * - 値は前後の空白をtrimし、引用符(`"`または`'`)で囲まれていれば1組だけ剥がす。
+ * - 値が空になった場合(`title:`のみ、`title: ""`等)は`undefined`を返す。
+ * - 複数の`title:`行がある場合は最初の1つを採用する(壊れたYAMLの救済は範囲外)。
+ */
+export function extractMermaidTitle(text: string): string | undefined {
+  const lines = text.split(/\r\n|\r|\n/);
+  const frontmatter = findFrontmatterRange(lines);
+  if (frontmatter === undefined) return undefined;
+
+  for (let i = frontmatter.bodyStart; i < frontmatter.bodyEnd; i++) {
+    const line = lines[i] ?? '';
+    const matched = /^title:\s*(.*)$/.exec(line);
+    if (matched === null) continue;
+
+    const rawValue = (matched[1] ?? '').trim();
+    const value = stripMatchingQuotes(rawValue);
+    return value === '' ? undefined : value;
+  }
+  return undefined;
+}
+
+/** `findCollapsedShapeTokens`が返す文字列(実測にもとづく確定リスト)。この並び順で返す。 */
+const SUBROUTINE_TOKEN = 'サブルーチン [[...]]';
+const CYLINDER_TOKEN = 'シリンダ [(...)]';
+const ASYMMETRIC_TOKEN = '非対称 >...]';
+const HEXAGON_TOKEN = '六角形 {{...}}';
+const PARALLELOGRAM_TOKEN = '平行四辺形 [/.../]';
+const TRAPEZOID_TOKEN = '台形 [/...\\]';
+
+/** `findCollapsedShapeTokens`が返し得る全トークンを、返却時に守るべき固定順で並べたもの。 */
+const COLLAPSED_SHAPE_TOKEN_ORDER: readonly string[] = [
+  SUBROUTINE_TOKEN,
+  CYLINDER_TOKEN,
+  ASYMMETRIC_TOKEN,
+  HEXAGON_TOKEN,
+  PARALLELOGRAM_TOKEN,
+  TRAPEZOID_TOKEN,
+];
+
+// いずれの文字クラスも改行を明示的に除外している(`[^…\n]`)。除外しないと、ある行の
+// 開き記号と別の行にある無関係な閉じ記号が誤って対応付けられ、行をまたいだ誤検出を
+// 生みかねないため(1ノード定義は1行に収まる、というflowchartの通常の書き方が前提)。
+
+/** `[[...]]`(サブルーチン)。 */
+const SUBROUTINE_PATTERN = /\[\[[^\]\n]*\]\]/;
+/** `[(...)]`(シリンダ)。 */
+const CYLINDER_PATTERN = /\[\([^)\n]*\)\]/;
+/**
+ * `>...]`(非対称)。矢印(`-->` `==>` `-.->`等)の`>`を誤検出しないよう、
+ * `>`の直前が英数字・アンダースコアであること(=ノードIDの末尾)を要求する。
+ * Mermaidの矢印は必ず`-` `=` `.` `~`のいずれかが`>`の直前に来るため、この条件で区別できる。
+ */
+const ASYMMETRIC_PATTERN = /\w>[^\]\n]*\]/;
+/** `{{...}}`(六角形)。 */
+const HEXAGON_PATTERN = /\{\{[^}\n]*\}\}/;
+/**
+ * `[/...\]`系すべて(平行四辺形・台形の両方を拾う)。開き記号(`/`または`\`)と
+ * 閉じ記号を別グループに取り、一致すれば平行四辺形、不一致なら台形と判定する
+ * (呼び出し側でグループを比較する)。
+ */
+const SLANTED_BRACKET_PATTERN = /\[([/\\])[^\]\n]*([/\\])\]/g;
+
+/**
+ * flowchart記法のうち、Excalidrawが長方形しか表現できず形状情報が失われるノード記法
+ * (サブルーチン・シリンダ・非対称・六角形・平行四辺形・台形)が使われていれば、
+ * その記法の呼び名を固定順・重複無しで返す。使われていなければ空配列。
+ *
+ * 追加の経緯(Issue #3): `@excalidraw/mermaid-to-excalidraw`はこれらの形状をすべて
+ * 長方形として変換してしまう(Excalidraw自体がこれらの図形をサポートしないため)。
+ * 本家Mermaidとの見た目の差分を利用者に案内するため、呼び出し側(`excal/`)がこの関数の
+ * 戻り値を使って警告メッセージを組み立てられるようにする(変換処理自体はここでは行わない)。
+ *
+ * 誤検出対策として以下のみ考慮する(最単純解釈。それ以外の誤検出は許容する):
+ * - `%%`で始まるコメント行は無視する。
+ * - frontmatterブロック(先頭の`---`〜`---`)の中は無視する。
+ * - ノードラベル本文に記号列がそのまま含まれるケース(例: `A[x>1]`)は考慮しない。
+ */
+export function findCollapsedShapeTokens(text: string): readonly string[] {
+  const lines = text.split(/\r\n|\r|\n/);
+  const frontmatter = findFrontmatterRange(lines);
+  const scanStart = frontmatter === undefined ? 0 : frontmatter.afterEnd;
+
+  const relevant = lines
+    .slice(scanStart)
+    .filter((line) => !line.trim().startsWith('%%'))
+    .join('\n');
+
+  const found = new Set<string>();
+  if (SUBROUTINE_PATTERN.test(relevant)) found.add(SUBROUTINE_TOKEN);
+  if (CYLINDER_PATTERN.test(relevant)) found.add(CYLINDER_TOKEN);
+  if (ASYMMETRIC_PATTERN.test(relevant)) found.add(ASYMMETRIC_TOKEN);
+  if (HEXAGON_PATTERN.test(relevant)) found.add(HEXAGON_TOKEN);
+
+  // グローバルフラグのRegExpは内部でlastIndexを持つため使い回さず、都度生成する。
+  const slantedBracketPattern = new RegExp(SLANTED_BRACKET_PATTERN);
+  let match = slantedBracketPattern.exec(relevant);
+  while (match !== null) {
+    const open = match[1] ?? '';
+    const close = match[2] ?? '';
+    found.add(open === close ? PARALLELOGRAM_TOKEN : TRAPEZOID_TOKEN);
+    match = slantedBracketPattern.exec(relevant);
+  }
+
+  return COLLAPSED_SHAPE_TOKEN_ORDER.filter((token) => found.has(token));
+}
