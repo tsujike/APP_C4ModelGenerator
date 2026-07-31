@@ -41,6 +41,10 @@ const LEVEL_MARKER_PATTERN = /^%%\s*L([1-8])\s*$/i;
  * 「空白ゼロ個以上のあとに非空白文字が続く」ことを要求する。これにより
  * `%%L1: 名前` / `%%L1 名前` / `%% L2 - 詳細` のような「マーカーに見えるがコメント扱いに
  * なる行」を拾う一方、`%%L1x` のように続きが単語文字の行(=そもそも別物)は拾わない。
+ *
+ * **このパターンだけでは普通のコメントを大量に拾ってしまう**(`%% L1=宣言 / L2=実態` のような
+ * 凡例行、`%% L1とL2は箱を揃えてある` のような説明行)。絞り込みは
+ * `findNamedMarkerLikeLines` 側の「正規マーカーが無いレベルに限る」条件で行う。
  */
 const NAMED_MARKER_LIKE_PATTERN = /^%%\s*L([1-8])\b\s*\S/i;
 
@@ -243,6 +247,7 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
 
       if (currentLevel === null) {
         // 最初のレベルマーカーより前のMODE行は「マーカーより前」警告の対象外(標準的な置き場所のため)。
+        // なおMODE行に限らず `%%` コメント行はすべて対象外(下の分岐を参照)。
         continue;
       }
       currentLines.push(rawLine);
@@ -253,7 +258,11 @@ export function splitMermaidLevels(source: string): MermaidLevelsResult {
 
     if (matched === null) {
       if (currentLevel === null) {
-        if (trimmedLine !== '') {
+        // 空行と `%%` コメント行は警告しない。コメント行を除外する理由(FR-7.5):
+        // 文書の冒頭にレベル体系の凡例をコメントで書くのは普通の使い方で、Mermaidから見ても
+        // もともと無視される行だから「無視します」と言われても打つ手がない。実害があるのは
+        // 図の本文(`flowchart TD` など)をマーカーより前に書いてしまった場合で、そちらは警告が残る。
+        if (trimmedLine !== '' && !trimmedLine.startsWith('%%')) {
           issues.push({
             severity: 'warning',
             line: lineNumber,
@@ -308,9 +317,25 @@ export interface NamedMarkerLikeLine {
  * 丸ごと落ちるという分かりにくい失敗になるため、呼び出し側(main.ts)が警告を出せるように
  * 行を返す。この関数自体は挙動を変えない(`LEVEL_MARKER_PATTERN` を変更せず、
  * `%%L1: 名前` を正規のマーカーとして受理することもしない)。
+ *
+ * **報告するのは「正規マーカーが1つも無いレベル」を指している行だけ**(FR-7.11)。
+ * 初版はこの条件が無く、Kennyの実文書で誤検知が続出した(実測): 冒頭に凡例として書かれた
+ * `%% L1=宣言(あるべき姿) / L2=実態` や `%% L1とL2は箱を揃えてある`、レベル本文中の
+ * `%% L3の凡例: 赤=是正前` まで「マーカーとして扱いません」と警告してしまう。これらは
+ * ただのコメントで、`%%L1`〜`%%L3` の正規マーカーは別行にちゃんと書かれており、
+ * 何も壊れていない。この警告が意味を持つのは「名前付きで書いたせいでそのレベルが
+ * 登録されなかった」ときだけなので、登録済みレベルを指す行は黙って見送る。
  */
 export function findNamedMarkerLikeLines(source: string): readonly NamedMarkerLikeLine[] {
   const rawLines = source.split(/\r\n|\r|\n/);
+
+  /** 正規マーカーで登録されているレベル。ここに在るレベルは「壊れていない」ので報告しない。 */
+  const markedLevels = new Set<number>();
+  for (const rawLine of rawLines) {
+    const matched = LEVEL_MARKER_PATTERN.exec(rawLine.trim());
+    if (matched !== null) markedLevels.add(Number(matched[1]));
+  }
+
   const result: NamedMarkerLikeLine[] = [];
 
   for (let i = 0; i < rawLines.length; i++) {
@@ -320,7 +345,10 @@ export function findNamedMarkerLikeLines(source: string): readonly NamedMarkerLi
     const matched = NAMED_MARKER_LIKE_PATTERN.exec(trimmedLine);
     if (matched === null) continue;
 
-    result.push({ line: i + 1, level: Number(matched[1]) as Level });
+    const level = Number(matched[1]);
+    if (markedLevels.has(level)) continue;
+
+    result.push({ line: i + 1, level: level as Level });
   }
 
   return result;

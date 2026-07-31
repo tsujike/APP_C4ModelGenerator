@@ -97,6 +97,23 @@ describe('splitMermaidLevels', () => {
     expect(levels.get(1)?.text).toBe('flowchart TD');
   });
 
+  it('does not warn about %% comment lines before the first marker', () => {
+    // Kennyの実文書と同じ形: 冒頭にレベル体系の凡例をコメントで書く。
+    // コメントはMermaidから見てももともと無視される行なので「無視します」と言う意味がない。
+    const source = [
+      '%% L1=宣言(あるべき姿) / L2=実態(いま動いているもの)',
+      '%% L1とL2は箱を揃えてある — 差分は「線」だけ',
+      '',
+      '%%L1',
+      'flowchart TD',
+    ].join('\n');
+
+    const { levels, issues } = splitMermaidLevels(source);
+
+    expect(issues).toEqual([]);
+    expect(levels.get(1)?.text).toBe('flowchart TD');
+  });
+
   it('keeps the first duplicate marker, warns, and discards the later body', () => {
     const source = [
       '%%L1',
@@ -313,6 +330,32 @@ describe('findNamedMarkerLikeLines', () => {
       { line: 1, level: 1 },
       { line: 3, level: 2 },
     ]);
+  });
+
+  it('does not flag comment lines that mention a level which has a real marker', () => {
+    // Kennyの実文書で誤検知した形。凡例コメント・説明コメント・本文中のコメントのいずれも
+    // L1〜L3の正規マーカーが別行にあるので、何も壊れていない=警告しない。
+    const source = [
+      '%% MODE: views',
+      '%% L1=宣言(あるべき姿) / L2=実態(いま動いているもの) / L3=是正経緯',
+      '%% L1とL2は箱を揃えてある — 差分は「線」と「⚠」だけ',
+      '%% L3は主題が違うため色の意味が変わる',
+      '%%L1',
+      'flowchart TD',
+      '%%L2',
+      'flowchart TD',
+      '%%L3',
+      '%% L3の凡例: 赤=是正前',
+      'flowchart TD',
+    ].join('\n');
+
+    expect(findNamedMarkerLikeLines(source)).toEqual([]);
+  });
+
+  it('still flags a level that has no real marker even when other levels do', () => {
+    const source = ['%%L1', 'flowchart TD', '', '%%L2 実態', 'flowchart LR'].join('\n');
+
+    expect(findNamedMarkerLikeLines(source)).toEqual([{ line: 4, level: 2 }]);
   });
 });
 
