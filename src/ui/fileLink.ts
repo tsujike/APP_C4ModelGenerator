@@ -2,8 +2,9 @@
  * ローカルの`.txt`ファイルに「リンク」し、外部エディタ(VSCode等)での保存を自動で画面へ
  * 反映する機能(post-v1.0 FR-8)。
  *
- * 既存の`ui/fileIO.ts`(保存/開くボタン)は「その場限りのファイルI/O」(1回読む/1回書き出す)で、
- * 読んだ後はメモリ上のソースとファイルの関係を一切覚えない。本モジュールはそれとは別系統で、
+ * 旧来の「保存/開く」ボタン(`ui/fileIO.ts`)は「その場限りのファイルI/O」(1回読む/1回書き出す)で、
+ * 読んだ後はメモリ上のソースとファイルの関係を一切覚えなかった。本モジュールはファイルへの参照を
+ * 覚え続ける方式でそれを置き換えたもので(旧ボタンはKennyの指示により廃止済み)、
  * `FileSystemFileHandle`(File System Access API)を介してファイルへの参照を保持し続け、
  * ポーリングで外部からの変更(mtime/サイズ)を検知して`onChange`で通知する「片方向の監視」を担う。
  * 書き戻し(`createWritable`)は行わない(やらないこと。リンク中は読み取り専用に倒す設計は
@@ -15,6 +16,8 @@
  * getFileHandle`等の戻り値として既に定義されているが、Permission API相当のメソッドが無い)。
  * `any`は禁止(実装指示書§4)なので、既存グローバル型へのインターフェースマージで最小限だけ補う。
  */
+
+import { FILE_HISTORY_MAX } from '../constants';
 
 declare global {
   interface Window {
@@ -94,12 +97,14 @@ export async function ensureReadPermission(handle: FileSystemFileHandle): Promis
 const DB_NAME = 'mermarium';
 const DB_VERSION = 1;
 const STORE_NAME = 'handles';
-const HANDLE_KEY = 'linkedFile';
+/** 履歴配列(`FileHistoryEntry[]`)を1件で丸ごと保持するキー。キーバリューストアなので
+ *  DBのバージョン・ストア構成は変えずキーを増やすだけで済む。 */
+const HISTORY_KEY = 'fileHistory';
 
 /**
  * `mermarium`データベースの`handles`オブジェクトストアを開く。DBのオープン自体が失敗する
  * (プライベートブラウジング等でIndexedDBが使えない)ケースはシステム境界として`null`に正規化し、
- * 呼び出し側(`persistHandle`/`restoreHandle`/`clearPersistedHandle`)が「永続化なし」として
+ * 呼び出し側(`loadHistory`/`recordHistory`/`removeFromHistory`)が「永続化なし」として
  * 静かにフォールバックできるようにする。
  */
 function openDb(): Promise<IDBDatabase | null> {
@@ -122,30 +127,6 @@ function openDb(): Promise<IDBDatabase | null> {
 }
 
 /**
- * `FileSystemFileHandle`をIndexedDBへ保存する(次回起動時に`restoreHandle`で読み戻すため)。
- * DBが開けない/書き込みに失敗する場合はすべて「永続化なし」として握りつぶす
- * (実装指示書§4「防御的コードは境界のみ」。IndexedDBはユーザー環境依存のシステム境界であり、
- * 永続化は本機能の主目的〈画面への反映〉に対して補助的なベストエフォート機能のため)。
- */
-export async function persistHandle(handle: FileSystemFileHandle): Promise<void> {
-  const db = await openDb();
-  if (db === null) return;
-  await new Promise<void>((resolve) => {
-    try {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(handle, HANDLE_KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-      tx.onabort = () => resolve();
-    } catch {
-      resolve();
-    } finally {
-      db.close();
-    }
-  });
-}
-
-/**
  * `FileSystemFileHandle`らしい値かどうかを最小限だけ確認する(`getFile`が関数であること)。
  * IndexedDBに保存された値の形が壊れている(異なるバージョンのブラウザ実装差・手動でのDB改変等)
  * 場合に、呼び出し側が実体の無いハンドルを掴んで後続処理でクラッシュしないようにするための
@@ -160,38 +141,48 @@ function looksLikeFileHandle(value: unknown): value is FileSystemFileHandle {
 }
 
 /**
- * 前回`persistHandle`で保存したハンドルを復元する。未保存、DBが開けない、保存値が
- * `FileSystemFileHandle`らしくない、のいずれも「復元できない」として`null`に正規化する
- * (呼び出し側=main.tsは「未リンク」と同じ扱いにできる)。
+ * ファイルリンク履歴の1件。ユーザーがリンクしたことのあるファイルを「もう一度開く」ための
+ * 手がかりだけを持つ。
+ *
+ * `name`(ファイル名)しか保存できない理由: File System Access APIは`FileSystemFileHandle`から
+ * 絶対パス・フォルダ構成を一切開示しない(ブラウザのセキュリティ設計上の制約)ため、
+ * 「どのフォルダのファイルか」を履歴の表示や検索の手がかりに使うことはできない。
  */
-export async function restoreHandle(): Promise<FileSystemFileHandle | null> {
-  const db = await openDb();
-  if (db === null) return null;
-  return new Promise<FileSystemFileHandle | null>((resolve) => {
-    try {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const request = tx.objectStore(STORE_NAME).get(HANDLE_KEY);
-      request.onsuccess = () => {
-        const value: unknown = request.result;
-        resolve(looksLikeFileHandle(value) ? value : null);
-      };
-      request.onerror = () => resolve(null);
-    } catch {
-      resolve(null);
-    } finally {
-      db.close();
-    }
-  });
+export interface FileHistoryEntry {
+  readonly handle: FileSystemFileHandle;
+  readonly name: string;
+  /** 最終利用時刻(epoch ms)。新しい順に並べる基準、かつ`formatHistoryTimestamp`の入力。 */
+  readonly lastUsedAt: number;
 }
 
-/** 永続化済みのハンドルを消す(リンク解除時に「ファイルが見つからない」等で使う)。 */
-export async function clearPersistedHandle(): Promise<void> {
+/**
+ * IndexedDBに保存された値が`FileHistoryEntry`らしいかどうかを最小限だけ確認する。
+ * `looksLikeFileHandle`と同じ理由(保存値の形が壊れている場合に後続処理をクラッシュさせない)の
+ * システム境界の型ガード。
+ */
+function looksLikeHistoryEntry(value: unknown): value is FileHistoryEntry {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { handle?: unknown; name?: unknown; lastUsedAt?: unknown };
+  return (
+    looksLikeFileHandle(candidate.handle) &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.lastUsedAt === 'number'
+  );
+}
+
+/**
+ * 履歴配列をIndexedDBへ丸ごと書き込む(`recordHistory`/`removeFromHistory`の内部実装)。
+ * DBが開けない/書き込みに失敗する場合はすべて「永続化なし」として握りつぶす
+ * (実装指示書§4「防御的コードは境界のみ」。IndexedDBはユーザー環境依存のシステム境界であり、
+ * 永続化は本機能の主目的〈画面への反映〉に対して補助的なベストエフォート機能のため)。
+ */
+async function writeHistory(entries: readonly FileHistoryEntry[]): Promise<void> {
   const db = await openDb();
   if (db === null) return;
   await new Promise<void>((resolve) => {
     try {
       const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).delete(HANDLE_KEY);
+      tx.objectStore(STORE_NAME).put(entries, HISTORY_KEY);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
       tx.onabort = () => resolve();
@@ -201,6 +192,126 @@ export async function clearPersistedHandle(): Promise<void> {
       db.close();
     }
   });
+}
+
+/**
+ * これまでにリンクした履歴を「最終利用が新しい順」で返す。未保存、DBが開けない、いずれも
+ * 空配列に正規化する(呼び出し側=main.tsは「履歴なし」と同じ扱いにできる)。保存値が壊れている
+ * 要素(`looksLikeHistoryEntry`を満たさない)は読み飛ばす(1件の破損で履歴全体を失わせないため)。
+ * 並び順は`upsertHistoryEntry`が常に「新しい順」で保存する不変条件に依っており、ここでの
+ * 読み出し時には並べ替えを行わない。
+ */
+export async function loadHistory(): Promise<FileHistoryEntry[]> {
+  const db = await openDb();
+  if (db === null) return [];
+  return new Promise<FileHistoryEntry[]>((resolve) => {
+    try {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const request = tx.objectStore(STORE_NAME).get(HISTORY_KEY);
+      request.onsuccess = () => {
+        const value: unknown = request.result;
+        resolve(Array.isArray(value) ? value.filter(looksLikeHistoryEntry) : []);
+      };
+      request.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+/**
+ * `a`と`b`が同一ファイルかどうかを`FileSystemHandle.isSameEntry`で判定する安全版。
+ * `isSameEntry`自体が存在しない(古い実装)、または呼び出しが失敗する(権限失効等)場合は、
+ * 判定不能を「別ファイル」側に倒す(安全側。誤って別ファイルを重複と見なして履歴から
+ * 消してしまうより、履歴に同名の2件が残る方が実害が小さいため)。
+ */
+async function isSameEntrySafe(a: FileSystemFileHandle, b: FileSystemFileHandle): Promise<boolean> {
+  if (typeof a.isSameEntry !== 'function') return false;
+  try {
+    return await a.isSameEntry(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `entries`の中から`handle`と同一ファイルの要素のインデックスを探す。`isSameEntry`は非同期の
+ * ため配列を順番に(並行にではなく)確認する。見つからなければ`-1`。
+ */
+async function findDuplicateIndex(
+  entries: readonly FileHistoryEntry[],
+  handle: FileSystemFileHandle,
+): Promise<number> {
+  for (let i = 0; i < entries.length; i++) {
+    const candidate = entries[i];
+    if (candidate === undefined) continue;
+    // isSameEntryは非同期のため、並行にではなく1件ずつ順に確認する(先に見つかった方を優先)。
+    if (await isSameEntrySafe(candidate.handle, handle)) return i;
+  }
+  return -1;
+}
+
+/**
+ * 履歴配列へ1件を追加/更新した新しい配列を返す純関数。重複の有無は呼び出し側(`recordHistory`)が
+ * `isSameEntry`で非同期に判定し、`duplicateIndex`(重複なしなら`-1`)として渡す。配列の組み立て
+ * 自体は純粋にしておくことで、IndexedDB・`isSameEntry`を一切使わずにテストできるようにする。
+ *
+ * 挙動: 重複していた要素は取り除いた上で、新しい`entry`を先頭に積む(=最終利用が最新のものが
+ * 常に先頭)。結果は`max`件を超えない(超えた分は末尾=最も古いものから溢れる)。
+ */
+export function upsertHistoryEntry(
+  entries: readonly FileHistoryEntry[],
+  entry: FileHistoryEntry,
+  duplicateIndex: number,
+  max: number,
+): FileHistoryEntry[] {
+  const withoutDuplicate = entries.filter((_, i) => i !== duplicateIndex);
+  return [entry, ...withoutDuplicate].slice(0, max);
+}
+
+/**
+ * `handle`を履歴の先頭へ記録する。同一ファイル(`isSameEntry`)が既に履歴にあれば、それを
+ * 取り除いた上で`lastUsedAt`を更新して先頭に入れ直す(重複させない)。件数は`FILE_HISTORY_MAX`まで
+ * (超過分は最も古いものから自動的に溢れる。`upsertHistoryEntry`参照)。
+ * DBが開けない/書き込みに失敗する場合はすべて「永続化なし」として黙って何もしない
+ * (`writeHistory`と同じ方針。ベストエフォート機能のため)。
+ */
+export async function recordHistory(handle: FileSystemFileHandle, now: number): Promise<void> {
+  const existing = await loadHistory();
+  const duplicateIndex = await findDuplicateIndex(existing, handle);
+  const entry: FileHistoryEntry = { handle, name: handle.name, lastUsedAt: now };
+  const updated = upsertHistoryEntry(existing, entry, duplicateIndex, FILE_HISTORY_MAX);
+  await writeHistory(updated);
+}
+
+/**
+ * 履歴から`handle`と同一のファイルを取り除く(ハンドルの権限が失効した・ファイルが見つからない
+ * 等で「もう復元できない」と分かった時に呼ぶ)。該当が無ければ何もしない。DBが開けない/
+ * 書き込みに失敗する場合はすべて「永続化なし」として黙って何もしない(`writeHistory`と同じ方針)。
+ */
+export async function removeFromHistory(handle: FileSystemFileHandle): Promise<void> {
+  const existing = await loadHistory();
+  const index = await findDuplicateIndex(existing, handle);
+  if (index === -1) return;
+  const updated = existing.filter((_, i) => i !== index);
+  await writeHistory(updated);
+}
+
+/**
+ * epoch ms(`FileHistoryEntry.lastUsedAt`)を履歴表示用のラベル`YYYY-MM-DD HH:mm`(ローカル時刻)に
+ * 整形する。秒以下は履歴の識別には不要なため切り捨てる。
+ */
+export function formatHistoryTimestamp(ms: number): string {
+  const date = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const year = String(date.getFullYear());
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
 /**

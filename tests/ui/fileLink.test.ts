@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   createFileWatcher,
+  formatHistoryTimestamp,
   isFileLinkSupported,
+  upsertHistoryEntry,
+  type FileHistoryEntry,
   type WatchableFileHandle,
 } from '../../src/ui/fileLink';
 
@@ -293,5 +296,81 @@ describe('isFileLinkSupported', () => {
         (globalThis as { window?: unknown }).window = original;
       }
     }
+  });
+});
+
+/**
+ * `upsertHistoryEntry`/`formatHistoryTimestamp`は`loadHistory`/`recordHistory`/`removeFromHistory`と
+ * 異なりIndexedDB・File System Access APIを一切使わない純関数のため、`createFileWatcher`と同様に
+ * vitestのnode環境でそのままテストできる(`handle`は同一性比較のダミーとして最小限のオブジェクトで足りる)。
+ */
+function fakeHistoryEntry(id: string, lastUsedAt: number): FileHistoryEntry {
+  return {
+    handle: { name: id } as unknown as FileHistoryEntry['handle'],
+    name: id,
+    lastUsedAt,
+  };
+}
+
+describe('upsertHistoryEntry', () => {
+  it('重複が無ければ新しい要素が先頭に積まれる', () => {
+    const existing = [fakeHistoryEntry('a.txt', 100), fakeHistoryEntry('b.txt', 200)];
+    const entry = fakeHistoryEntry('c.txt', 300);
+
+    const result = upsertHistoryEntry(existing, entry, -1, 10);
+
+    expect(result.map((e) => e.name)).toEqual(['c.txt', 'a.txt', 'b.txt']);
+    expect(result).toHaveLength(3);
+  });
+
+  it('重複がある場合は該当要素が消えて先頭に入り、件数は増えない', () => {
+    const existing = [fakeHistoryEntry('a.txt', 100), fakeHistoryEntry('b.txt', 200)];
+    // b.txt(index=1)が重複として更新される想定
+    const updatedB = fakeHistoryEntry('b.txt', 300);
+
+    const result = upsertHistoryEntry(existing, updatedB, 1, 10);
+
+    expect(result.map((e) => e.name)).toEqual(['b.txt', 'a.txt']);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.lastUsedAt).toBe(300);
+  });
+
+  it('maxを超えたら末尾(最古)が落ちる', () => {
+    const existing = [
+      fakeHistoryEntry('a.txt', 300),
+      fakeHistoryEntry('b.txt', 200),
+      fakeHistoryEntry('c.txt', 100),
+    ];
+    const entry = fakeHistoryEntry('d.txt', 400);
+
+    const result = upsertHistoryEntry(existing, entry, -1, 3);
+
+    expect(result.map((e) => e.name)).toEqual(['d.txt', 'a.txt', 'b.txt']);
+    expect(result).toHaveLength(3);
+  });
+
+  it('元配列を破壊しない', () => {
+    const existing = [fakeHistoryEntry('a.txt', 100), fakeHistoryEntry('b.txt', 200)];
+    const existingSnapshot = [...existing];
+    const entry = fakeHistoryEntry('c.txt', 300);
+
+    upsertHistoryEntry(existing, entry, -1, 10);
+
+    expect(existing).toEqual(existingSnapshot);
+    expect(existing).toHaveLength(2);
+  });
+});
+
+describe('formatHistoryTimestamp', () => {
+  it('YYYY-MM-DD HH:mm形式の文字列になる', () => {
+    const result = formatHistoryTimestamp(Date.UTC(2026, 0, 15, 3, 4, 5));
+
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  it('同じ入力なら同じ出力になる(決定的)', () => {
+    const ms = Date.UTC(2026, 5, 20, 12, 30, 0);
+
+    expect(formatHistoryTimestamp(ms)).toBe(formatHistoryTimestamp(ms));
   });
 });

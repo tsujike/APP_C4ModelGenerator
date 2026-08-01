@@ -18,23 +18,14 @@
             placeholder="Untitled"
           />
         </span>
-        <span>
-          サンプル:
-          <select id="sample-select">
-            <option value="" disabled selected>読み込む...</option>
-            <option value="internet-banking">インターネットバンキング</option>
-            <option value="ec-site">ECサイト</option>
-            <option value="mermaid-levels">Mermaid(レベル別)</option>
-            <option value="views-profile">プロファイル例(採用プロセス/ビュー軸)</option>
-          </select>
-        </span>
         <span id="file-controls">
           ファイル:
-          <button id="save-file-button" type="button">保存</button>
-          <button id="open-file-button" type="button">開く</button>
-          <input id="file-input" type="file" accept=".txt,text/plain" hidden />
-          <button id="link-file-button" type="button">ファイルにリンク</button>
-          <button id="relink-file-button" type="button" hidden></button>
+          <button id="pick-file-button" type="button">ファイルを選択</button>
+          <select id="file-history-select" aria-label="最近使ったファイル">
+            <option value="" disabled selected>履歴...</option>
+          </select>
+          <button id="unlink-file-button" type="button" hidden>リンク解除</button>
+          <input id="file-input" type="file" accept=".txt,.md,.mmd,.mermaid,text/plain" hidden />
           <span id="file-link-status" class="file-link-status" hidden></span>
         </span>
         <span id="level-controls">

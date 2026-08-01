@@ -1026,3 +1026,36 @@ VSCode等の外部エディタで編集中のローカルファイルにリン�
 ### 残課題
 
 実ブラウザでのピッカー操作と、実際のVSCode保存の検知は未検証。ヘッドレス環境ではネイティブのファイルダイアログが起動できないため自動テスト不能。Kennyの手元での確認が必要。
+
+## 2026-08-01 ツールバーのファイル系UI刷新(サンプル/保存/開くの廃止、ファイルを選択+履歴)
+
+### 何を作ったか
+
+ツールバーのファイル系UIを作り替えた。「サンプル▼」メニュー(`index.html`の`#sample-select`、`main.ts`の`setupSampleMenu`)、「保存」ボタン(ソースの`.txt`ダウンロード。`ui/fileIO.ts`の`sanitizeFilename`/`saveSourceAsFile`)、「開く」ボタン(その場限りの読み込み専用の旧ボタン)をいずれも廃止し、「ファイルを選択」ボタン+「履歴▼」メニュー+独立した「リンク解除」ボタンの3点に一本化した(Kenny指示)。SVG/PNGエクスポート(FR-6.1/FR-6.2)は対象外で無変更。組込サンプル「インターネットバンキング」自体は削除しておらず、`loadPersistedSource(...) ?? internetBankingSample`として初回起動時の既定ソースに残っている。`src/samples/*.ts`のファイル自体もテストのフィクスチャとして残る。
+
+### 実装の要点
+
+- 「ファイルを選択」ボタン(`#pick-file-button`、旧「ファイルにリンク」の改称)は常にピッカーを開く。File System Access API対応ブラウザ(Chrome/Edge)ではネイティブピッカーで選んだファイルへ「リンク」し、以後FR-8.3のポーリング監視の対象になる。非対応ブラウザ(Firefox/Safari)では隠し`<input type="file">`(`#file-input`)へフォールバックし、その場限りの1回読み込みになる(監視・履歴登録なし)。
+- 「履歴▼」(`#file-history-select`)は過去にリンクしたファイルを最大`FILE_HISTORY_MAX`(=10)件、最終利用日時が新しい順に保持・表示する。`option`の`value`には履歴配列のインデックスを入れる(`FileSystemFileHandle`自体は文字列化できないため)。表示できるのはファイル名と最終利用日時(`YYYY-MM-DD HH:mm`、`formatHistoryTimestamp`)のみで、絶対パスは表示できない(File System Access APIがハンドルから絶対パスを一切開示しないため)。
+- 永続化はIndexedDB(DB名`mermarium`/version 1/ストア`handles`)のキー`fileHistory`に履歴配列を1本で保存する(キーバリューストアのためスキーマ変更・マイグレーション不要。未リリースの旧キー`linkedFile`は移行しない)。
+- 重複判定は`FileSystemHandle.isSameEntry()`(`isSameEntrySafe`で失敗時は「別ファイル」に倒す安全側)。配列の組み立て自体は純関数`upsertHistoryEntry(entries, entry, duplicateIndex, max)`に切り出し、`isSameEntry`・IndexedDBに依存しない形でvitestから直接テストできるようにした。
+- 「リンク解除」(`#unlink-file-button`)はリンク中のみ表示される独立ボタンにし、押しても履歴からは消えない(次回も履歴から1クリックで戻れる)。一方、ウォッチャーが`onLost`(ファイル消失)を報告した場合、およびピッカー直後の読み込み自体が失敗した場合は`removeFromHistory()`を呼び、履歴からも取り除く。
+- 旧FR-8にあった「再リンク: ファイル名」という単独ファイル専用の副ボタンは廃止し、履歴メニューがその役割を引き継いだ。
+
+### 検証結果(客観)
+
+- ゲート: `npx tsc --noEmit` = 0 / `npm test` = 0(25ファイル 313件) / `npm run lint` = 0 / `npm run build` = 0。
+- Playwright(Chromium)による実ブラウザ検証: OPFS(`navigator.storage.getDirectory()`)経由で取得した本物の`FileSystemFileHandle`をピッカーのスタブ(`showOpenFilePicker`の差し替え)に返す方式により、ネイティブダイアログを介さずに実フローを自動検証できた。確認できた項目:
+  - ツールバーから旧UI(「サンプル▼」「保存」「開く」)が消えていること
+  - リンク時にエディタが読み取り専用になること
+  - 外部からファイルを書き換えると約1秒で自動反映されること(VSCode保存の再現)
+  - リンク解除で編集可能に戻ること
+  - 同じファイルを2回リンクしても履歴が重複しないこと
+  - リロード後も履歴が残ること
+  - 履歴メニューから復帰できること
+  - pageerrorはゼロ
+
+### 残課題
+
+- 非対応ブラウザ(Firefox/Safari)側のフォールバック経路(`<input type="file">`)は実ブラウザでは未検証(Playwright検証はChromiumのみ)。
+- 実際のネイティブファイル選択ダイアログの見た目・操作感(OSネイティブUI)そのものはPlaywrightのスタブでは検証できないため未確認。Kennyの手元での確認が必要。

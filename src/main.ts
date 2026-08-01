@@ -24,10 +24,7 @@ import {
 } from './parser/mermaidLevels';
 import type { ParseIssue } from './parser/types';
 import { toExcalidraw } from './render/toExcalidraw';
-import { ecSiteSample } from './samples/ec-site';
 import { internetBankingSample } from './samples/internet-banking';
-import { mermaidLevelsSample } from './samples/mermaid-levels';
-import { viewsProfileSample } from './samples/views-profile';
 import {
   createEditor,
   loadPersistedSource,
@@ -35,15 +32,17 @@ import {
   type EditorController,
 } from './ui/editor';
 import { exportCurrentLevelPng, exportCurrentLevelSvg } from './ui/exporter';
-import { readFileAsText, saveSourceAsFile, stripFileExtension } from './ui/fileIO';
+import { readFileAsText, stripFileExtension } from './ui/fileIO';
 import {
-  clearPersistedHandle,
   createFileWatcher,
   ensureReadPermission,
+  formatHistoryTimestamp,
   isFileLinkSupported,
-  persistHandle,
+  loadHistory,
   pickTextFile,
-  restoreHandle,
+  recordHistory,
+  removeFromHistory,
+  type FileHistoryEntry,
   type FileWatcher,
 } from './ui/fileLink';
 import { createIssuesPanel, type IssuesPanelController } from './ui/issuesPanel';
@@ -66,24 +65,12 @@ const C4_LEVELS: readonly Level[] = [1, 2, 3, 4];
 /** 起動直後に表示する初期レベル(設計書§8.1: z0はL2 Fit直後のzoomで確定する)。 */
 const INITIAL_LEVEL: Level = 2;
 
-/** サンプルメニュー(FR-1.5)に列挙する組込サンプル。「最低2件」をこのタスクで充足する。 */
-const SAMPLES: ReadonlyArray<{ id: string; label: string; source: string }> = [
-  { id: 'internet-banking', label: 'インターネットバンキング', source: internetBankingSample },
-  { id: 'ec-site', label: 'ECサイト', source: ecSiteSample },
-  { id: 'mermaid-levels', label: 'Mermaid(レベル別)', source: mermaidLevelsSample },
-  {
-    id: 'views-profile',
-    label: 'プロファイル例(採用プロセス/ビュー軸)',
-    source: viewsProfileSample,
-  },
-];
-
 /** C4モードでモデルを持たないMermaidモード用の空モデル(levelController.updateModelの引数用)。 */
 const EMPTY_MODEL: C4Model = { roots: [], byAlias: new Map(), edges: [] };
 
-// サンプル(またはlocalStorageからの復元、FR-1.4)→統一モデル→(全レベル分の)射影→レイアウト→
-// Excalidraw要素、の配線。マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+切替+
-// アンカー保存(T3-2)、エディタ+ライブ再解析(T4-1)、issuesパネル/永続化/サンプルメニュー/
+// 初期サンプル(またはlocalStorageからの復元、FR-1.4)→統一モデル→(全レベル分の)射影→
+// レイアウト→Excalidraw要素、の配線。マウント後にカメラ監視/Fit/正規化(T2-3)、レベル判定+
+// 切替+アンカー保存(T3-2)、エディタ+ライブ再解析(T4-1)、issuesパネル/永続化/ファイルリンク/
 // スプリッター(T4-2)を配線する。
 async function bootstrap(): Promise<void> {
   const excalidrawContainer = document.getElementById('excalidraw-container');
@@ -140,10 +127,8 @@ async function bootstrap(): Promise<void> {
     levelData = newLevelData;
   });
   setupPersistence(editor);
-  setupSampleMenu(editor, titleField);
   setupSplitter();
   setupExporter(host, levelController, () => levelData);
-  setupFileIO(editor, titleField);
   setupFileLink(editor, titleField);
 }
 
@@ -208,66 +193,176 @@ function setupTitlePersistence(titleField: TitleController): void {
 }
 
 /**
- * T4-2: サンプル読込メニュー(FR-1.5)。選択時、現ソースを破棄する旨を`confirm()`で確認してから
- * `editor.setValue`で差し替える。キャンセル時は何もしない。
- * post-v1.0で追加: 読込と同時にタイトルをそのサンプルの表示ラベル(例:「ECサイト」)に
- * 差し替える(「今どのモデルを見ているか」をタイトルに反映させ、サンプル切替後に古いタイトルが
- * 残り続けるのを防ぐ)。
+ * post-v1.0(FR-8): ローカルのテキストファイルにリンクし、外部エディタ(VSCode等)での保存を
+ * 自動で画面へ反映する。実体は`FileSystemFileHandle`を介した参照の保持とポーリング監視で、
+ * `ui/fileLink.ts`の`createFileWatcher`に委ねる(このファイルはUIの配線のみを担う)。
+ * 旧来の「サンプル読込メニュー」「保存/開くボタン」(その場限りのファイルI/O)は廃止し、
+ * ファイル選択とリンク中監視、および「履歴」メニューからの再リンクの3経路に一本化した。
  *
- * 実装判断(申し送り): 確認ダイアログはブラウザ標準の`window.confirm`を採用した。本アプリは
- * UIフレームワーク・状態管理ライブラリを導入しない方針(CLAUDE.md)であり、独自モーダルを
- * 実装するとDOM状態管理・フォーカストラップ等の作り込みが必要になり「やること」の範囲を
- * 超える。`confirm()`はブロッキングだが、破棄確認という単発の同期的な意思確認に対しては
- * 副作用が無く最も単純な実装である。
+ * 状態は「未リンク」「リンク中」の2つだけで、ローカル変数`watcher`(`FileWatcher | null`)が
+ * それを表す。主ボタン(`#pick-file-button`)は常にファイル選択ダイアログを開く(未リンク/
+ * リンク中を問わず、押すたびに新しいファイルへ乗り換えられる)。既にリンク中の場合は、
+ * 新しいリンクを張る前に必ず今の`watcher`を`stop()`してから差し替える(二重監視の防止)。
  *
- * `<select>`は選択のたびに空(プレースホルダ)へ戻す。そうしないと同じサンプルを続けて
- * 選び直した場合に値が変化せず`change`イベントが発火しない(再読込したいケースを阻害する)。
+ * 「履歴」(`#file-history-select`)には過去にリンクしたファイルの名前と最終利用日時だけが並ぶ。
+ * フォルダ構成や絶対パスは出せない —— File System Access APIは`FileSystemFileHandle`から
+ * 絶対パス・フォルダ構成を一切開示しないブラウザのセキュリティ設計になっているため、
+ * 履歴として保持・表示できるのはファイル名(`FileHistoryEntry.name`)までである
+ * (`ui/fileLink.ts`の`FileHistoryEntry`のJSDoc参照)。
+ *
+ * File System Access API非対応ブラウザ(Firefox/Safari等)では、`#pick-file-button`は隠し
+ * `<input type="file">`のクリックにフォールバックし、選択したファイルをその場限りで読み込む
+ * (監視・履歴登録はしない。ユーザー環境がハンドルを継続保持する手段を持たないため)。
+ * `#file-history-select`はこの環境では常に空で無意味なため`disabled`にする。
  */
-function setupSampleMenu(editor: EditorController, titleField: TitleController): void {
-  const select = document.getElementById('sample-select');
-  if (!(select instanceof HTMLSelectElement)) return;
+function setupFileLink(editor: EditorController, titleField: TitleController): void {
+  const pickButtonRaw = document.getElementById('pick-file-button');
+  const historySelectRaw = document.getElementById('file-history-select');
+  const unlinkButtonRaw = document.getElementById('unlink-file-button');
+  const fileInputRaw = document.getElementById('file-input');
+  const status = document.getElementById('file-link-status');
+  if (
+    !(pickButtonRaw instanceof HTMLButtonElement) ||
+    !(historySelectRaw instanceof HTMLSelectElement) ||
+    !(unlinkButtonRaw instanceof HTMLButtonElement) ||
+    !(fileInputRaw instanceof HTMLInputElement) ||
+    status === null
+  ) {
+    return;
+  }
+  // instanceofによる型の絞り込みはネストした関数(クロージャ)の中まで持ち越されない
+  // (TypeScriptの制御フロー解析の一般的な制約)ため、絞り込み済みの型で改めて束縛し直す
+  // (このconstは絞り込み後の型で「宣言時に」定まるため、以後はクロージャの中でも有効)。
+  const pickButton = pickButtonRaw;
+  const historySelect = historySelectRaw;
+  const unlinkButton = unlinkButtonRaw;
+  const fileInput = fileInputRaw;
 
-  select.addEventListener('change', () => {
-    const chosenId = select.value;
-    select.value = '';
-    const chosen = SAMPLES.find((s) => s.id === chosenId);
-    if (chosen === undefined) return;
+  const supported = isFileLinkSupported();
+  if (!supported) {
+    historySelect.title = 'この機能は Chrome / Edge でのみ利用できます';
+  }
+
+  let watcher: FileWatcher | null = null;
+  let history: readonly FileHistoryEntry[] = [];
+
+  function showLinked(name: string): void {
+    status!.hidden = false;
+    status!.textContent = `🔗 ${name} を監視中(編集は VSCode 側で)`;
+    unlinkButton.hidden = false;
+  }
+
+  function showUnlinked(): void {
+    status!.hidden = true;
+    status!.textContent = '';
+    unlinkButton.hidden = true;
+  }
+
+  function showLost(): void {
+    status!.hidden = false;
+    status!.textContent = '⚠ ファイルが見つかりません(リンク解除)';
+    unlinkButton.hidden = true;
+  }
+
+  function showFallbackLoaded(name: string): void {
+    status!.hidden = false;
+    status!.textContent = `📄 ${name} を読み込みました(このブラウザでは自動反映は使えません)`;
+    unlinkButton.hidden = true;
+  }
+
+  /**
+   * 「履歴」`<select>`の中身を`loadHistory()`の最新結果で作り直す。optionの`value`は履歴配列の
+   * インデックス(文字列化)にする。`FileSystemFileHandle`自体は文字列化できないため
+   * (`option[value]`は文字列しか持てない)、選択時は`history[Number(select.value)]`で引き直す。
+   */
+  async function refreshHistoryMenu(): Promise<void> {
+    history = await loadHistory();
+    historySelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    placeholder.textContent = '履歴...';
+    historySelect.appendChild(placeholder);
+    for (const [index, entry] of history.entries()) {
+      const option = document.createElement('option');
+      option.value = String(index);
+      option.textContent = `${entry.name}(${formatHistoryTimestamp(entry.lastUsedAt)})`;
+      historySelect.appendChild(option);
+    }
+    historySelect.disabled = !supported || history.length === 0;
+  }
+
+  /**
+   * 共通リンク処理。権限確認→読込→破棄確認→反映→履歴記録→監視開始、の順で行う。
+   * 既にリンク中(`watcher !== null`)なら、新しい監視を始める前に必ず今の監視を止める
+   * (2つのファイルを同時にポーリングしない)。
+   */
+  async function linkToFile(handle: FileSystemFileHandle): Promise<void> {
+    const permitted = await ensureReadPermission(handle);
+    if (!permitted) {
+      window.alert('ファイルへのアクセスが許可されませんでした。');
+      return;
+    }
+
+    let file: File;
+    let text: string;
+    try {
+      file = await handle.getFile();
+      text = await file.text();
+    } catch {
+      window.alert('ファイルを読み込めませんでした。');
+      await removeFromHistory(handle);
+      void refreshHistoryMenu();
+      return;
+    }
 
     const discard = window.confirm(
-      `現在のソースを破棄して「${chosen.label}」サンプルを読み込みます。よろしいですか?`,
+      `現在のソースを破棄してファイル「${handle.name}」にリンクします。よろしいですか?`,
     );
     if (!discard) return;
 
-    editor.setValue(chosen.source);
-    titleField.setTitle(chosen.label);
-  });
-}
+    if (watcher !== null) {
+      watcher.stop();
+      watcher = null;
+    }
 
-/**
- * post-v1.0で追加: ソーステキストのファイル保存/読込。
- * 保存: 現在のタイトル(`sanitizeFilename`で禁止文字除去)を`.txt`ファイル名にしてダウンロードする
- * (`ui/fileIO.ts`の`saveSourceAsFile`)。
- * 読込: 「開く」ボタンで隠し`<input type="file">`をクリックさせ、選択された`.txt`ファイルを
- * `FileReader`で読む。サンプル読込(`setupSampleMenu`)と同じ「現在のソースを破棄してよいか」の
- * `confirm()`確認を経てから`editor.setValue`し、タイトルも読み込んだファイル名(拡張子除く)に
- * 差し替える。`<input type="file">`は選択のたびに`value = ''`へ戻す(同じファイルを連続で
- * 選び直しても`change`イベントが発火するようにするため。`<select>`側で既に解決済みの
- * 同種の問題と同じ対処。このファイル冒頭のsetupSampleMenuの申し送り参照)。
- */
-function setupFileIO(editor: EditorController, titleField: TitleController): void {
-  const saveButton = document.getElementById('save-file-button');
-  const openButton = document.getElementById('open-file-button');
-  const fileInput = document.getElementById('file-input');
-  if (!(fileInput instanceof HTMLInputElement)) return;
+    editor.setValue(text);
+    titleField.setTitle(stripFileExtension(handle.name));
 
-  saveButton?.addEventListener('click', () => {
-    saveSourceAsFile(editor.getValue(), titleField.getTitle());
-  });
+    await recordHistory(handle, Date.now());
+    void refreshHistoryMenu();
 
-  openButton?.addEventListener('click', () => {
+    watcher = createFileWatcher(handle, {
+      intervalMs: FILE_LINK_POLL_INTERVAL_MS,
+      initialLastModified: file.lastModified,
+      initialSize: file.size,
+      onChange: (newText) => {
+        editor.setValue(newText);
+      },
+      onLost: () => {
+        watcher = null;
+        editor.setReadOnly(false);
+        showLost();
+        void removeFromHistory(handle).then(() => refreshHistoryMenu());
+      },
+    });
+
+    editor.setReadOnly(true);
+    showLinked(handle.name);
+  }
+
+  pickButton.addEventListener('click', () => {
+    if (supported) {
+      void pickTextFile().then((handle) => {
+        if (handle !== null) void linkToFile(handle);
+      });
+      return;
+    }
     fileInput.click();
   });
 
+  // 非対応ブラウザ向けフォールバック。監視も履歴登録もしない、その場限りの読み込み。
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     fileInput.value = '';
@@ -282,6 +377,7 @@ function setupFileIO(editor: EditorController, titleField: TitleController): voi
       .then((text) => {
         editor.setValue(text);
         titleField.setTitle(stripFileExtension(file.name));
+        showFallbackLoaded(file.name);
       })
       .catch(() => {
         // ファイル読込はユーザー環境(ディスク)依存の境界のため、失敗時は通知のみでアプリを止めない
@@ -289,159 +385,30 @@ function setupFileIO(editor: EditorController, titleField: TitleController): voi
         window.alert('ファイルの読込に失敗しました。');
       });
   });
-}
 
-/**
- * post-v1.0(FR-8): ローカルの`.txt`ファイルにリンクし、外部エディタ(VSCode等)での保存を
- * 自動で画面へ反映する。`setupFileIO`(その場限りの保存/開く)とは別系統で、
- * `FileSystemFileHandle`を介した参照の保持とポーリング監視を`ui/fileLink.ts`に委ねる。
- *
- * 状態は「未リンク」「リンク中」の2つだけ。主ボタン(`#link-file-button`)がトグルで、
- * 未リンク時は「ファイルにリンク」(常にピッカーを開く)、リンク中は「リンク解除」になる。
- * 前回のファイルへ1クリックで戻るための副ボタン(`#relink-file-button`)は、復元済みハンドルが
- * あるときだけ表示する。主ボタンを「再リンク」に化けさせず別ボタンに分けたのは、そうしないと
- * 一度リンクしたあと**別のファイルを選び直す手段が無くなる**ため(ピッカーを開く経路が
- * 前回ハンドルに乗っ取られる)。ステータス表示は`#file-link-status`。
- *
- * 非対応ブラウザ(File System Access APIを持たないFirefox/Safari等)ではボタンを`disabled`にし、
- * それ以外は何もしない(この関数の残りのロジックは一切配線しない。ボタンがdisabledなので
- * クリックイベント自体発生しないが、コードの意図を明確にするため早期returnする)。
- *
- * 実装判断(申し送り): 「リンク解除」時に`clearPersistedHandle()`を呼ばないのは指示どおり
- * (同じファイルへ1クリックで戻れるようにするため)。一方「ファイルが見つからない」
- * (`onLost`)・「読み込めない」時は`clearPersistedHandle()`を呼び、次回はまっさらな
- * 「ファイルにリンク」ボタン(ピッカーから選び直し)に戻す。この非対称は「解除は正常な一時停止、
- * 消失は異常」という状態の違いを反映したもの。
- */
-function setupFileLink(editor: EditorController, titleField: TitleController): void {
-  const button = document.getElementById('link-file-button');
-  const relinkButton = document.getElementById('relink-file-button');
-  const status = document.getElementById('file-link-status');
-  if (
-    !(button instanceof HTMLButtonElement) ||
-    !(relinkButton instanceof HTMLButtonElement) ||
-    status === null
-  ) {
-    return;
-  }
-
-  if (!isFileLinkSupported()) {
-    button.disabled = true;
-    button.title = 'この機能は Chrome / Edge でのみ利用できます';
-    return;
-  }
-
-  // 前回リンクしていたファイルへのハンドル(起動直後は`restoreHandle`の結果、リンク解除後は
-  // 直前にリンクしていたハンドルを保持し続ける。「次回また同じファイルへ1クリックで戻れる」
-  // ようにするための状態。ハンドルを完全に手放すのは`clearPersistedHandle`を呼ぶ異常系のみ)。
-  let previousHandle: FileSystemFileHandle | null = null;
-  let watcher: FileWatcher | null = null;
-
-  function showLinked(name: string): void {
-    button!.textContent = 'リンク解除';
-    relinkButton!.hidden = true;
-    status!.hidden = false;
-    status!.textContent = `🔗 ${name} を監視中(編集は VSCode 側で)`;
-  }
-
-  /** 未リンク表示。`handleName`があれば「前回のファイルへワンクリックで戻す」副ボタンも出す。 */
-  function showUnlinked(handleName: string | null): void {
-    button!.textContent = 'ファイルにリンク';
-    relinkButton!.hidden = handleName === null;
-    relinkButton!.textContent = handleName === null ? '' : `再リンク: ${handleName}`;
-    status!.hidden = true;
-    status!.textContent = '';
-  }
-
-  function showLost(): void {
-    button!.textContent = 'ファイルにリンク';
-    relinkButton!.hidden = true;
-    relinkButton!.textContent = '';
-    status!.hidden = false;
-    status!.textContent = '⚠ ファイルが見つかりません(リンク解除)';
-  }
-
-  // 起動時: 前回のハンドルが復元できれば副ボタンを出すだけ(この時点では読みに行かない。
-  // 権限の再許可にはユーザー操作が必要なため)。IndexedDBの読み出しは非同期なので、その間に
-  // ユーザーが既にリンクを張り終えている可能性がある。その場合に表示を「未リンク」へ
-  // 巻き戻さないよう、まだ何も起きていないときだけ反映する。
-  void restoreHandle().then((handle) => {
-    if (handle === null) return;
-    if (watcher !== null || previousHandle !== null) return;
-    previousHandle = handle;
-    showUnlinked(handle.name);
+  historySelect.addEventListener('change', () => {
+    const index = Number(historySelect.value);
+    const entry = history[index];
+    // 同じ項目を続けて選び直しても`change`イベントが発火するよう、選択のたびに空へ戻す
+    // (旧サンプルメニュー/旧`<input type="file">`と同じ対処)。
+    historySelect.value = '';
+    if (entry === undefined) return;
+    void linkToFile(entry.handle);
   });
 
-  button.addEventListener('click', () => {
+  unlinkButton.addEventListener('click', () => {
+    // 履歴からは消さない(「もう一度リンクし直したい」ときのために残す)。
     if (watcher !== null) {
-      // リンク中のクリック = リンク解除。`clearPersistedHandle()`は呼ばない(仕様どおり)。
       watcher.stop();
       watcher = null;
-      editor.setReadOnly(false);
-      showUnlinked(previousHandle?.name ?? null);
-      return;
     }
-    void linkToFile(null);
+    editor.setReadOnly(false);
+    showUnlinked();
   });
 
-  relinkButton.addEventListener('click', () => {
-    if (previousHandle === null) return;
-    void linkToFile(previousHandle);
-  });
-
-  /** `handle`が`null`ならピッカーで選ばせる。非nullならそのハンドル(前回のファイル)へ再リンクする。 */
-  async function linkToFile(existing: FileSystemFileHandle | null): Promise<void> {
-    const handle = existing ?? (await pickTextFile());
-    if (handle === null) return;
-
-    const permitted = await ensureReadPermission(handle);
-    if (!permitted) {
-      window.alert('ファイルへのアクセスが許可されませんでした。');
-      return;
-    }
-
-    let file: File;
-    let text: string;
-    try {
-      file = await handle.getFile();
-      text = await file.text();
-    } catch {
-      window.alert('ファイルを読み込めませんでした。リンクを解除します。');
-      await clearPersistedHandle();
-      previousHandle = null;
-      showUnlinked(null);
-      return;
-    }
-
-    const discard = window.confirm(
-      `現在のソースを破棄してファイル「${handle.name}」にリンクします。よろしいですか?`,
-    );
-    if (!discard) return;
-
-    editor.setValue(text);
-    titleField.setTitle(stripFileExtension(handle.name));
-
-    previousHandle = handle;
-    await persistHandle(handle);
-    watcher = createFileWatcher(handle, {
-      intervalMs: FILE_LINK_POLL_INTERVAL_MS,
-      initialLastModified: file.lastModified,
-      initialSize: file.size,
-      onChange: (newText) => {
-        editor.setValue(newText);
-      },
-      onLost: () => {
-        watcher = null;
-        editor.setReadOnly(false);
-        showLost();
-        previousHandle = null;
-        void clearPersistedHandle();
-      },
-    });
-
-    editor.setReadOnly(true);
-    showLinked(handle.name);
-  }
+  // 起動時に履歴メニューだけ描画する。自動でファイルを読みに行くことはしない
+  // (File System Access APIの権限モデル上、ファイルアクセスにはユーザー操作の文脈が必要なため)。
+  void refreshHistoryMenu();
 }
 
 /** T4-2: エディタ列/ビューワー列のスプリッター(要件定義書§4)を配線する。 */
