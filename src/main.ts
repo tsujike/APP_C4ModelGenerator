@@ -6,7 +6,7 @@ import {
   type LevelController,
   type LevelData,
 } from './camera/levelController';
-import { DEFAULT_TITLE } from './constants';
+import { DEFAULT_TITLE, FILE_LINK_POLL_INTERVAL_MS } from './constants';
 import { mountExcalidraw, type ExcalidrawHost } from './excal/host';
 import { convertMermaidToElements } from './excal/mermaid';
 import { layout } from './layout/layout';
@@ -36,6 +36,16 @@ import {
 } from './ui/editor';
 import { exportCurrentLevelPng, exportCurrentLevelSvg } from './ui/exporter';
 import { readFileAsText, saveSourceAsFile, stripFileExtension } from './ui/fileIO';
+import {
+  clearPersistedHandle,
+  createFileWatcher,
+  ensureReadPermission,
+  isFileLinkSupported,
+  persistHandle,
+  pickTextFile,
+  restoreHandle,
+  type FileWatcher,
+} from './ui/fileLink';
 import { createIssuesPanel, type IssuesPanelController } from './ui/issuesPanel';
 import { createSplitter } from './ui/splitter';
 import {
@@ -134,6 +144,7 @@ async function bootstrap(): Promise<void> {
   setupSplitter();
   setupExporter(host, levelController, () => levelData);
   setupFileIO(editor, titleField);
+  setupFileLink(editor, titleField);
 }
 
 /**
@@ -278,6 +289,159 @@ function setupFileIO(editor: EditorController, titleField: TitleController): voi
         window.alert('ファイルの読込に失敗しました。');
       });
   });
+}
+
+/**
+ * post-v1.0(FR-8): ローカルの`.txt`ファイルにリンクし、外部エディタ(VSCode等)での保存を
+ * 自動で画面へ反映する。`setupFileIO`(その場限りの保存/開く)とは別系統で、
+ * `FileSystemFileHandle`を介した参照の保持とポーリング監視を`ui/fileLink.ts`に委ねる。
+ *
+ * 状態は「未リンク」「リンク中」の2つだけ。主ボタン(`#link-file-button`)がトグルで、
+ * 未リンク時は「ファイルにリンク」(常にピッカーを開く)、リンク中は「リンク解除」になる。
+ * 前回のファイルへ1クリックで戻るための副ボタン(`#relink-file-button`)は、復元済みハンドルが
+ * あるときだけ表示する。主ボタンを「再リンク」に化けさせず別ボタンに分けたのは、そうしないと
+ * 一度リンクしたあと**別のファイルを選び直す手段が無くなる**ため(ピッカーを開く経路が
+ * 前回ハンドルに乗っ取られる)。ステータス表示は`#file-link-status`。
+ *
+ * 非対応ブラウザ(File System Access APIを持たないFirefox/Safari等)ではボタンを`disabled`にし、
+ * それ以外は何もしない(この関数の残りのロジックは一切配線しない。ボタンがdisabledなので
+ * クリックイベント自体発生しないが、コードの意図を明確にするため早期returnする)。
+ *
+ * 実装判断(申し送り): 「リンク解除」時に`clearPersistedHandle()`を呼ばないのは指示どおり
+ * (同じファイルへ1クリックで戻れるようにするため)。一方「ファイルが見つからない」
+ * (`onLost`)・「読み込めない」時は`clearPersistedHandle()`を呼び、次回はまっさらな
+ * 「ファイルにリンク」ボタン(ピッカーから選び直し)に戻す。この非対称は「解除は正常な一時停止、
+ * 消失は異常」という状態の違いを反映したもの。
+ */
+function setupFileLink(editor: EditorController, titleField: TitleController): void {
+  const button = document.getElementById('link-file-button');
+  const relinkButton = document.getElementById('relink-file-button');
+  const status = document.getElementById('file-link-status');
+  if (
+    !(button instanceof HTMLButtonElement) ||
+    !(relinkButton instanceof HTMLButtonElement) ||
+    status === null
+  ) {
+    return;
+  }
+
+  if (!isFileLinkSupported()) {
+    button.disabled = true;
+    button.title = 'この機能は Chrome / Edge でのみ利用できます';
+    return;
+  }
+
+  // 前回リンクしていたファイルへのハンドル(起動直後は`restoreHandle`の結果、リンク解除後は
+  // 直前にリンクしていたハンドルを保持し続ける。「次回また同じファイルへ1クリックで戻れる」
+  // ようにするための状態。ハンドルを完全に手放すのは`clearPersistedHandle`を呼ぶ異常系のみ)。
+  let previousHandle: FileSystemFileHandle | null = null;
+  let watcher: FileWatcher | null = null;
+
+  function showLinked(name: string): void {
+    button!.textContent = 'リンク解除';
+    relinkButton!.hidden = true;
+    status!.hidden = false;
+    status!.textContent = `🔗 ${name} を監視中(編集は VSCode 側で)`;
+  }
+
+  /** 未リンク表示。`handleName`があれば「前回のファイルへワンクリックで戻す」副ボタンも出す。 */
+  function showUnlinked(handleName: string | null): void {
+    button!.textContent = 'ファイルにリンク';
+    relinkButton!.hidden = handleName === null;
+    relinkButton!.textContent = handleName === null ? '' : `再リンク: ${handleName}`;
+    status!.hidden = true;
+    status!.textContent = '';
+  }
+
+  function showLost(): void {
+    button!.textContent = 'ファイルにリンク';
+    relinkButton!.hidden = true;
+    relinkButton!.textContent = '';
+    status!.hidden = false;
+    status!.textContent = '⚠ ファイルが見つかりません(リンク解除)';
+  }
+
+  // 起動時: 前回のハンドルが復元できれば副ボタンを出すだけ(この時点では読みに行かない。
+  // 権限の再許可にはユーザー操作が必要なため)。IndexedDBの読み出しは非同期なので、その間に
+  // ユーザーが既にリンクを張り終えている可能性がある。その場合に表示を「未リンク」へ
+  // 巻き戻さないよう、まだ何も起きていないときだけ反映する。
+  void restoreHandle().then((handle) => {
+    if (handle === null) return;
+    if (watcher !== null || previousHandle !== null) return;
+    previousHandle = handle;
+    showUnlinked(handle.name);
+  });
+
+  button.addEventListener('click', () => {
+    if (watcher !== null) {
+      // リンク中のクリック = リンク解除。`clearPersistedHandle()`は呼ばない(仕様どおり)。
+      watcher.stop();
+      watcher = null;
+      editor.setReadOnly(false);
+      showUnlinked(previousHandle?.name ?? null);
+      return;
+    }
+    void linkToFile(null);
+  });
+
+  relinkButton.addEventListener('click', () => {
+    if (previousHandle === null) return;
+    void linkToFile(previousHandle);
+  });
+
+  /** `handle`が`null`ならピッカーで選ばせる。非nullならそのハンドル(前回のファイル)へ再リンクする。 */
+  async function linkToFile(existing: FileSystemFileHandle | null): Promise<void> {
+    const handle = existing ?? (await pickTextFile());
+    if (handle === null) return;
+
+    const permitted = await ensureReadPermission(handle);
+    if (!permitted) {
+      window.alert('ファイルへのアクセスが許可されませんでした。');
+      return;
+    }
+
+    let file: File;
+    let text: string;
+    try {
+      file = await handle.getFile();
+      text = await file.text();
+    } catch {
+      window.alert('ファイルを読み込めませんでした。リンクを解除します。');
+      await clearPersistedHandle();
+      previousHandle = null;
+      showUnlinked(null);
+      return;
+    }
+
+    const discard = window.confirm(
+      `現在のソースを破棄してファイル「${handle.name}」にリンクします。よろしいですか?`,
+    );
+    if (!discard) return;
+
+    editor.setValue(text);
+    titleField.setTitle(stripFileExtension(handle.name));
+
+    previousHandle = handle;
+    await persistHandle(handle);
+    watcher = createFileWatcher(handle, {
+      intervalMs: FILE_LINK_POLL_INTERVAL_MS,
+      initialLastModified: file.lastModified,
+      initialSize: file.size,
+      onChange: (newText) => {
+        editor.setValue(newText);
+      },
+      onLost: () => {
+        watcher = null;
+        editor.setReadOnly(false);
+        showLost();
+        previousHandle = null;
+        void clearPersistedHandle();
+      },
+    });
+
+    editor.setReadOnly(true);
+    showLinked(handle.name);
+  }
 }
 
 /** T4-2: エディタ列/ビューワー列のスプリッター(要件定義書§4)を配線する。 */

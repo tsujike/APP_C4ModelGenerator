@@ -24,7 +24,7 @@
 
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { StreamLanguage, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
-import { EditorSelection, EditorState } from '@codemirror/state';
+import { Compartment, EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { EDITOR_DEBOUNCE_MS, STORAGE_KEY, STORAGE_VERSION } from '../constants';
 
@@ -121,6 +121,16 @@ export interface EditorController {
    * にそのまま乗る(再解析・localStorage保存とも同じ経路。main.ts参照)。
    */
   setValue(source: string): void;
+  /**
+   * post-v1.0(FR-8): 読み取り専用状態を切り替える(ファイルリンク中は編集を外部エディタ側に
+   * 譲る。`ui/fileLink.ts`のウォッチャーが検知した変更で`setValue`を呼ぶ間、ユーザーの手入力が
+   * 競合して上書きし合うのを防ぐ)。
+   * `EditorState.readOnly`だけを切り替えるとカーソルは表示されるが編集不可という中途半端な
+   * 見た目になる(CodeMirrorの既知の仕様: `readOnly`はディスパッチを拒否するだけで、
+   * `contenteditable`自体は`editable`コンパートメントが制御する)ため、`EditorView.editable`も
+   * 同時に切り替える。
+   */
+  setReadOnly(readOnly: boolean): void;
   /** CodeMirrorビューを破棄し、保留中のデバウンスも取り消す(後始末用)。 */
   destroy(): void;
 }
@@ -189,6 +199,11 @@ export function createEditor(container: HTMLElement, initialValue: string): Edit
     for (const listener of listeners) listener(source);
   }, EDITOR_DEBOUNCE_MS);
 
+  // post-v1.0(FR-8): 読み取り専用の切り替え用コンパートメント。`setReadOnly`はこの2つの
+  // コンパートメントの中身だけを差し替える(他の拡張には触れない)。
+  const readOnlyCompartment = new Compartment();
+  const editableCompartment = new Compartment();
+
   const view = new EditorView({
     parent: container,
     state: EditorState.create({
@@ -200,6 +215,8 @@ export function createEditor(container: HTMLElement, initialValue: string): Edit
         c4Language,
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         EditorView.lineWrapping,
+        readOnlyCompartment.of(EditorState.readOnly.of(false)),
+        editableCompartment.of(EditorView.editable.of(true)),
         EditorView.theme({
           '&': { height: '100%', fontSize: '13px' },
           '.cm-scroller': {
@@ -236,6 +253,14 @@ export function createEditor(container: HTMLElement, initialValue: string): Edit
     setValue(source) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: source },
+      });
+    },
+    setReadOnly(readOnly) {
+      view.dispatch({
+        effects: [
+          readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
+          editableCompartment.reconfigure(EditorView.editable.of(!readOnly)),
+        ],
       });
     },
     destroy() {

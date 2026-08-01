@@ -57,6 +57,14 @@ export const STORAGE_TITLE_KEY = 'c4-model-whiteboard-viewer:title';
 export const DEFAULT_TITLE = 'Untitled';
 
 /**
+ * post-v1.0(FR-8): ファイルリンク中のポーリング間隔。外部エディタ(VSCode等)での保存を
+ * `getFile()`のポーリングで検知する(`ui/fileLink.ts`の`createFileWatcher`)。1秒は
+ * 「保存してから画面に反映されるまでの体感待ち時間」と「不要なポーリング頻度」の単純な折衷値
+ * (要件が具体的な上限を定めていないため実装指示書§4の「最も単純な解釈」に従う)。
+ */
+export const FILE_LINK_POLL_INTERVAL_MS = 1000;
+
+/**
  * スプリッター(`ui/splitter.ts`)がエディタ列(editor-pane+issues-panel)の幅をドラッグで
  * 変更する際のクランプ値・既定値。出典: docs/01_要件定義書.md §4「エディタとビューワーの境界は
  * ドラッグでリサイズ可能」。狭すぎ/広すぎを防ぐための上下限のみ定義し、厳密な操作性の作り込みは

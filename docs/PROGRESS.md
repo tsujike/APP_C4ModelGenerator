@@ -996,3 +996,33 @@ sequenceDiagram
 コメントを `---` の**後ろ**に移すと「問題なし」になることを実測(`/tmp/verify_fm.js`)。
 本アプリ側の不具合ではないためコードは変えず、READMEの「レベルに名前を付ける」に注意書きを追加した。
 エラーメッセージが分かりにくい(mermaid生のまま)ので、専用の警告を出すかは未決。Kenny判断待ち。
+
+## 2026-07-31 FR-8 ファイルにリンク(外部エディタ連携)
+
+### 何を作ったか
+
+VSCode等の外部エディタで編集中のローカルファイルにリンクし、外部での保存を自動でアプリの画面へ反映する機能(FR-8)。`src/ui/fileLink.ts`(新規)・`src/ui/editor.ts`の`setReadOnly`(新規)・`src/main.ts`の`setupFileLink`(新規)で実装。既存の`ui/fileIO.ts`(保存/開くボタン)は無変更のまま残している。
+
+### 実装の要点
+
+- ツールバーの「ファイル:」グループに主ボタン`#link-file-button`(「ファイルにリンク」⇔「リンク解除」のトグル)、副ボタン`#relink-file-button`(復元済みハンドルがあるときだけ表示、前回ファイルへ1クリックで再リンク)、状態表示`#file-link-status`を追加。
+- リンクは`FileSystemFileHandle`(File System Access API)を介して保持する。読み込み前は既存の「開く」と同じ破棄確認`confirm()`を出す。
+- リンク中は`lastModified`と`size`のどちらかが変化したかを1秒間隔でポーリングし、変化があれば内容を読み直して`editor.setValue()`する(既存の300msデバウンス経路に乗るため再解析・再描画は自動)。タブが非表示の間はポーリングしない。
+- リンク中はエディタを読み取り専用にする(`ui/editor.ts`の`setReadOnly`。`EditorState.readOnly`と`EditorView.editable`の2つのCompartmentを同時に切り替える)。外部エディタでの編集を正とし、アプリ側の編集が次の外部保存で消える混乱を防ぐ設計。「リンク解除」で編集可に戻る。
+- ハンドルはIndexedDB(DB名`mermarium`/ストア`handles`/キー`linkedFile`)に永続化し、次回起動時に副ボタンとして復元する。起動時に自動では読みに行かない(ブラウザの権限モデル上、再許可にはユーザー操作が必要なため)。
+- リンク解除では永続化ハンドルを消さない(次回同じファイルへ1クリックで戻れるようにするため)。ファイルが見つからない/読めない(`onLost`)場合だけ消して初期状態に戻す。
+- Chrome / Edge専用(File System Access API。Firefox / Safari非対応)。非対応ブラウザではボタンを`disabled`にし、`title`属性に非対応の旨を出す。単体HTML(`file://`)でも動作することを検証済み。
+- 書き戻し(アプリ→ファイル)は行わない片方向。ピッカーが受け付ける拡張子は`.txt` `.md` `.mmd` `.mermaid`(「すべてのファイル」も選択可)。
+
+### 検証結果(客観)
+
+- ゲート: `tsc=0` / `vitest 25 files 311 tests = 0` / `eslint=0` / `build=0`
+- Playwright(Chromium、`http://127.0.0.1:4192/`)で確認:
+  - 対応ブラウザ: `{"hasPicker":"function","linkLabel":"ファイルにリンク","linkDisabled":false,"relinkHidden":true,"statusHidden":true}`、pageerrorなし
+  - 非対応シミュレート(`showOpenFilePicker`を`undefined`化): `{"disabled":true,"title":"この機能は Chrome / Edge でのみ利用できます"}`、pageerrorなし
+  - 読み取り専用中の挙動: `contenteditable="false"`になりつつ`setValue()`は通る(`INITIAL`→`AFTER_EXTERNAL_CHANGE`)。解除で`contenteditable="true"`に戻る
+  - ウォッチャー: フェイクハンドルで20ms間隔・200msの間に7回`onChange`、`stop()`後は追加通知なし
+
+### 残課題
+
+実ブラウザでのピッカー操作と、実際のVSCode保存の検知は未検証。ヘッドレス環境ではネイティブのファイルダイアログが起動できないため自動テスト不能。Kennyの手元での確認が必要。
